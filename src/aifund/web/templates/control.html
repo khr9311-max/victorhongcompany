@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block title %}제어{% endblock %}
+{% block content %}
+{% if not sess %}<div class="msg err">제어 기능을 쓰려면 <a href="/login">관리자 로그인</a>이 필요합니다.</div>{% endif %}
+
+<div class="card">
+  <h2>정지 동작(각각 설명된 일만 합니다)</h2>
+  <table>
+    <tr><th>동작</th><th>하는 일</th><th>하지 않는 일</th><th></th></tr>
+    <tr><td><b>신규 매수 중지</b></td><td class="small">위험을 늘리는 주문(매수)을 막습니다. 재시작해도 유지됩니다.</td>
+      <td class="small">보유분 매도·미체결 주문·위험 감소 주문은 건드리지 않습니다.</td>
+      <td>{% if sess %}
+        <form class="inline" method="post" action="/control/halt"><input type="hidden" name="csrf" value="{{ csrf }}">
+          <select name="scope"><option value="all">전체</option>{% for m in d.markets %}<option value="{{ m.market }}">{{ m.market }}</option>{% endfor %}</select>
+          <input name="reason" placeholder="사유"><button class="danger">중지</button></form>
+        <form class="inline" method="post" action="/control/resume"><input type="hidden" name="csrf" value="{{ csrf }}">
+          <select name="scope"><option value="all">전체</option>{% for m in d.markets %}<option value="{{ m.market }}">{{ m.market }}</option>{% endfor %}</select>
+          <button class="secondary">재개</button></form>{% endif %}</td></tr>
+    <tr><td><b>미체결 취소</b></td><td class="small">봇이 낸 미체결 주문만 취소 요청합니다. 거래소 확인 전까지 '취소 요청됨'으로 표시됩니다.</td>
+      <td class="small">보유분은 팔지 않습니다. 다른 프로그램의 주문은 건드리지 않습니다.</td>
+      <td>{% if sess %}<form class="inline" method="post" action="/control/cancel-open"><input type="hidden" name="csrf" value="{{ csrf }}">
+          <select name="market"><option value="">전체</option>{% for m in d.markets %}<option value="{{ m.market }}">{{ m.market }}</option>{% endfor %}</select>
+          <button class="danger">미체결 취소</button></form>{% endif %}</td></tr>
+  </table>
+  <p class="small">활성 플래그: {% for f in d.flags %}<span class="chip bad">{{ f.key }}: {{ f.reason }}</span>{% else %}없음{% endfor %}</p>
+</div>
+
+{% for m in d.markets %}
+<div class="card">
+  <h2>{{ m.market }} · 계좌 {{ m.account }} · 종목 {{ m.instruments|join(', ') }} · 배정 {{ m.allocation|krw }}</h2>
+  <h3 class="small">LIVE 실거래</h3>
+  {% if m.active %}
+    <p class="{{ 'bad' if m.scope_ok else 'warn' }}"><b>{{ 'LIVE 활성' if m.scope_ok else '설정 변경으로 재확인 필요(주문 차단 중)' }}</b> — {{ m.active.activated_at|kst }} ({{ m.active.activated_by }})</p>
+    {% if sess %}<form class="inline" method="post" action="/control/live/disable"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="market" value="{{ m.market }}">
+      <input name="reason" placeholder="사유"><button class="danger">LIVE 끄기(신규 실주문 중단)</button></form>{% endif %}
+  {% else %}
+    <p class="muted">비활성 — 실제 주문 어댑터로 주문이 전달되지 않습니다.</p>
+  {% endif %}
+  {% if mode == 'live' and sess %}
+    <p class="small">활성화 범위: 시장 {{ m.market }} / 계좌 {{ m.account }} / 허용 종목 {{ m.instruments|join(', ') }} / 원금 한도 {{ d.risk.principal_cap_krw|krw }} ·
+       총노출 {{ d.risk.gross_exposure_cap_krw|krw }} · 1회 주문 {{ d.risk.max_order_notional_krw|krw }} · 일손실 {{ d.risk.daily_loss_stop_krw|krw }} · 최대낙폭 {{ d.risk.max_drawdown_stop_pct }}%.
+       활성화 후 범위 내 주문은 건별 승인 없이 실행됩니다.</p>
+    <form class="inline" method="post" action="/control/live/check"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="market" value="{{ m.market }}">
+      <label class="small"><input type="checkbox" name="ack" value="yes"> 출금 권한 없는 API 키임을 확인</label><button class="secondary">사전 점검</button></form>
+    <form class="inline" method="post" action="/control/live/enable"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="market" value="{{ m.market }}">
+      <label class="small"><input type="checkbox" name="ack" value="yes"> 출금 권한 없는 키 확인</label>
+      <input name="phrase" placeholder="{{ m.phrase }}" size="28" required><button class="danger">LIVE 켜기</button></form>
+    <p class="small muted">확인 문구를 정확히 입력: <code>{{ m.phrase }}</code></p>
+  {% elif mode != 'live' %}<p class="small muted">LIVE는 <code>live</code> 모드로 실행한 서비스에서만 켤 수 있습니다(현재 {{ mode }}).</p>{% endif %}
+  {% if m.check %}<details><summary class="small">최근 사전 점검 {{ m.check.ts|kst }} — {{ '통과' if m.check.ok else '실패' }}</summary>
+    <table class="small">{% for i in m.check['items'] %}<tr><td class="{{ 'ok' if i.ok else ('bad' if i.blocking else 'warn') }}">{{ '✔' if i.ok else '✘' }}</td><td>{{ i.name }}</td><td>{{ i.detail }}</td></tr>{% endfor %}</table></details>{% endif %}
+
+  <h3 class="small">보유분 청산(별도 확인 필요)</h3>
+  <table class="small"><tr><th>종목</th><th class="n">봇 수량</th><th class="n">매수1호가</th><th class="n">예상 대금</th><th>비고</th></tr>
+  {% for r in m.liq.rows %}<tr><td>{{ r.instrument_id }}</td><td class="n">{{ r.qty|num }}</td><td class="n">{{ r.bid }}</td><td class="n">{{ r.est_proceeds }}</td><td class="warn">{{ r.note }}</td></tr>
+  {% else %}<tr><td colspan="5" class="muted">청산할 보유분 없음</td></tr>{% endfor %}</table>
+  <ul class="small">{% for w in m.liq.warnings %}<li>{{ w }}</li>{% endfor %}</ul>
+  {% if sess and m.liq.rows %}<form class="inline" method="post" action="/control/liquidate"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="market" value="{{ m.market }}">
+    <input name="phrase" placeholder="{{ m.liq.confirm_phrase }}" required><button class="danger">위 내용대로 청산 주문</button></form>
+    <p class="small muted">확인 문구: <code>{{ m.liq.confirm_phrase }}</code></p>{% endif %}
+</div>
+{% endfor %}
+
+<div class="card">
+  <h2>실행무결성 자체검증 · 손실 정지 해제</h2>
+  {% if d.selftest %}<p class="small">최근 {{ d.selftest.ts|kst }} — <b class="{{ 'ok' if d.selftest.ok else 'bad' }}">{{ '통과' if d.selftest.ok else '실패' }}</b>
+    {% for i in d.selftest['items'] %}<span class="chip {{ 'ok' if i.ok else 'bad' }}">{{ i.name }}</span>{% endfor %}</p>{% else %}<p class="small warn">아직 실행하지 않음(LIVE 전제 조건)</p>{% endif %}
+  {% if sess %}<form class="inline" method="post" action="/control/selftest"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="secondary">자체검증 실행(수 초, 실주문 없음)</button></form>
+  <form class="inline" method="post" action="/control/reset-drawdown"><input type="hidden" name="csrf" value="{{ csrf }}">
+    <input name="confirm" placeholder="낙폭 정지 해제" required><button class="danger">최대 낙폭 정지 해제</button></form>
+  <p class="small muted">일손실 정지는 KST 자정에 자동으로 풀리지만, 최대 낙폭 정지는 위 확인 문구로만 해제됩니다.</p>{% endif %}
+</div>
+
+<div class="card"><h2>제어 이력</h2>
+  <table class="small"><tr><th>시각</th><th>주체</th><th>동작</th><th>범위</th><th>내용</th></tr>
+  {% for e in d.events %}<tr><td>{{ e.ts|kst }}</td><td>{{ e.actor }}</td><td>{{ e.action }}</td><td>{{ e.scope }}</td><td>{{ (e.detail_json or '')[:200] }}</td></tr>{% endfor %}
+  </table></div>
+{% endblock %}

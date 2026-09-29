@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}AI 투자회사{% endblock %} · 빅터홍컴퍼니</title>
+<link rel="stylesheet" href="/static/style.css">
+{% block head %}{% endblock %}
+</head>
+<body>
+{% if mode == "offline_demo" %}<div class="banner demo">오프라인 데모 — 가짜(합성) 데이터입니다. 실제 시세·실제 거래가 아닙니다.</div>
+{% elif mode == "internal_paper" %}<div class="banner paper">내부 모의체결 — 실제 공개 시세로 가상 체결합니다. 실거래 체결과 다를 수 있습니다.</div>
+{% elif mode == "broker_sandbox" %}<div class="banner sandbox">증권사 공식 모의투자 환경</div>
+{% elif mode == "live" %}<div class="banner live">실거래 모드 — LIVE가 활성화된 시장은 실제 계좌로 주문합니다.</div>{% endif %}
+<header>
+  <span class="brand">빅터홍컴퍼니 AI 투자회사</span>
+  <nav>
+    <a href="/">개요</a><a href="/strategies">전략·비교</a><a href="/research">연구·검증</a><a href="/orders">주문·대사</a><a href="/control">제어</a><a href="/settings">설정</a>
+  </nav>
+  <span style="margin-left:auto" class="small muted">
+  {% if sess %}로그인됨 <form class="inline" method="post" action="/logout"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="secondary">로그아웃</button></form>
+  {% else %}<a href="/login">관리자 로그인</a>(제어·설정 변경에 필요){% endif %}
+  </span>
+</header>
+<main>
+{% if msg %}<div class="msg info">{{ msg }}</div>{% endif %}
+{% if err %}<div class="msg err">{{ err }}</div>{% endif %}
+{% block content %}{% endblock %}
+</main>
+</body>
+</html>

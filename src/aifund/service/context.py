@@ -1,0 +1,341 @@
+"""애플리케이션 구성(모드별 격리).
+
+장부(book)
+- operating: 사용자가 선택한 단일 운용 설정(A/B/C). internal_paper/offline_demo에서는 내부 모의체결,
+  broker_sandbox에서는 증권사 모의투자, live에서는 실제 계좌(LIVE 가드 경유)로 주문한다.
+- shadow_A / shadow_B / shadow_C: 같은 스냅샷으로 독립 운용되는 가상 장부(가상 원금, 실예산과 합산 금지).
+- baseline_bh: 허용 종목 동일비중 매수·보유 기준, baseline_cash: 현금 유지 기준.
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+import socket
+import subprocess
+from dataclasses import dataclass, field
+from decimal import Decimal
+from pathlib import Path
+from typing import Any
+
+from aifund import __version__
+from aifund.ai.budget import AIBudget
+from aifund.ai.demo_responder import demo_responder
+from aifund.ai.provider import AnthropicProvider, DemoProvider, LLMProvider, OllamaProvider
+from aifund.ai.service import AIService
+from aifund.brokers.base import BrokerAdapter, MarketData
+from aifund.brokers.paper import PaperBroker
+from aifund.config.settings import Settings
+from aifund.config.store import SettingsStore, env_overrides
+from aifund.control.flags import Flags, Incidents
+from aifund.control.live import LiveActivations, LiveGuardedBroker
+from aifund.core.money import D, ZERO
+from aifund.core.paths import ModePaths
+from aifund.core.secrets import ModeSecrets, load_mode_secrets
+from aifund.core.timeutil import Clock, SystemClock
+from aifund.data.collector import SnapshotCollector
+from aifund.data.demo import DemoMarketData
+from aifund.data.fx import FxService
+from aifund.data.news import NewsCollector
+from aifund.data.store import MarketStore
+from aifund.db.database import Database
+from aifund.execution.executor import OrderExecutor
+from aifund.execution.reconcile import Reconciler
+from aifund.ledger.ledger import Ledger
+from aifund.ledger.valuation import EquityTracker
+from aifund.notify import Notifier
+
+log = logging.getLogger(__name__)
+
+SHADOW_SETTINGS = ("A", "B", "C")
+OPERATING = "operating"
+
+
+def code_version(root: Path) -> str:
+    try:
+        out = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=root, capture_output=True, text=True, timeout=3)
+        if out.returncode == 0 and out.stdout.strip():
+            dirty = subprocess.run(["git", "status", "--porcelain"], cwd=root, capture_output=True, text=True, timeout=3).stdout.strip()
+            return out.stdout.strip() + ("-dirty" if dirty else "")
+    except (OSError, subprocess.SubprocessError):
+        pass
+    import hashlib
+
+    h = hashlib.sha256()
+    src = root / "src" / "aifund"
+    for p in sorted(src.rglob("*.py")):
+        h.update(p.read_bytes())
+    return f"{__version__}+src.{h.hexdigest()[:10]}"
+
+
+@dataclass
+class MarketRuntime:
+    market: str
+    data: MarketData | None
+    data_reason: str
+    collector: SnapshotCollector | None
+    operating_account: str
+    operating_executor: OrderExecutor | None
+    operating_broker: BrokerAdapter | None
+    broker_reason: str
+    reconciler: Reconciler | None = None
+
+
+@dataclass
+class AppContext:
+    mode: str
+    paths: ModePaths
+    db: Database
+    clock: Clock
+    secrets: ModeSecrets
+    store_settings: SettingsStore
+    settings_version: int
+    settings: Settings
+    locked_settings: dict[str, str]
+    market_store: MarketStore
+    fx: FxService
+    ledger: Ledger
+    equity: EquityTracker
+    flags: Flags
+    incidents: Incidents
+    notifier: Notifier
+    activations: LiveActivations
+    news: NewsCollector
+    ai: AIService
+    markets: dict[str, MarketRuntime] = field(default_factory=dict)
+    shadow_executors: dict[str, OrderExecutor] = field(default_factory=dict)
+    code_version: str = ""
+    host: str = field(default_factory=socket.gethostname)
+    startup_reconciled: dict[str, bool] = field(default_factory=dict)
+    replay: MarketData | None = None
+    _provider: LLMProvider | None = None
+
+    # ---------------- 설정 ----------------
+    def current_settings(self) -> Settings:
+        return self.settings
+
+    def reload_settings(self) -> bool:
+        version, s = self.store_settings.current()
+        if version == self.settings_version:
+            return False
+        s, locked = env_overrides(s)
+        self.settings_version, self.settings, self.locked_settings = version, s, locked
+        self._provider = None
+        log.info("설정 버전 %s 적용", version)
+        return True
+
+    # ---------------- AI ----------------
+    def provider(self) -> LLMProvider | None:
+        if self._provider is not None:
+            return self._provider
+        s = self.settings.ai
+        if self.mode == "offline_demo":
+            self._provider = DemoProvider(demo_responder)
+        elif s.provider == "anthropic" and self.secrets.anthropic_api_key:
+            self._provider = AnthropicProvider(api_key=self.secrets.anthropic_api_key, model=s.model, effort=s.effort,
+                                               use_fallbacks=s.use_server_fallbacks, timeout=s.timeout_sec,
+                                               max_retries=s.max_retries)
+        elif s.provider == "ollama":
+            self._provider = OllamaProvider(model=s.model, host=os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434"))
+        return self._provider
+
+    def budget(self) -> AIBudget:
+        return AIBudget(self.db, self.settings.ai, self.fx, self.clock)
+
+    # ---------------- 장부 ----------------
+    def book_ids(self) -> list[str]:
+        return [r["book_id"] for r in self.ledger.books()]
+
+    def book_setting(self, book_id: str) -> str:
+        if book_id == OPERATING:
+            return self.settings.operating_setting
+        r = self.ledger.book(book_id)
+        return r["setting"] if r else "?"
+
+    def executor_for(self, book_id: str, market: str) -> OrderExecutor | None:
+        if book_id == OPERATING:
+            mr = self.markets.get(market)
+            return mr.operating_executor if mr else None
+        return self.shadow_executors.get(book_id)
+
+    def all_executors(self) -> list[OrderExecutor]:
+        seen: dict[str, OrderExecutor] = {}
+        for mr in self.markets.values():
+            if mr.operating_executor is not None:
+                seen[mr.operating_executor.account_id] = mr.operating_executor
+        for ex in self.shadow_executors.values():
+            seen[ex.account_id] = ex
+        return list(seen.values())
+
+    def price(self, iid: str) -> Decimal | None:
+        q = self.market_store.latest_quote(iid)
+        if q is not None and q.mid is not None:
+            return q.mid
+        c = self.db.query_one("SELECT close FROM candles WHERE instrument_id=? ORDER BY open_time DESC LIMIT 1", (iid,))
+        return D(c["close"]) if c else None
+
+    def market_capital(self, book_id: str, market: str) -> Decimal:
+        """장부의 시장별 운용 자본(KRW). live 운용 장부는 LIVE 활성화 때 실제 배정된 금액, 그 외는 원금 × 시장 배정 비율."""
+        if book_id == OPERATING and self.mode == "live":
+            rows = self.db.query("SELECT delta FROM ledger_entries WHERE book_id=? AND kind='principal' AND ref_type='live_alloc' "
+                                 "AND ref_id=?", (book_id, market))
+            return sum((D(r[0]) for r in rows), ZERO)
+        cap = self.settings.risk.principal_cap_krw
+        ms = self.settings.markets.get(market)  # type: ignore[call-overload]
+        if ms is None or cap <= 0:
+            return ZERO
+        return self.ledger.principal(book_id) * ms.allocation_krw / cap
+
+    def ai_cost_for_setting(self, setting: str) -> Decimal:
+        """전략별 비용 배분: A=0, B=연구 AI 비용 전액, C=연구+검증 비용 전액(공유 비용은 나누지 않고 각 설정에 모두 반영)."""
+        roles = {"A": (), "B": ("research",), "C": ("research", "review_independent", "review")}.get(setting, ())
+        if not roles:
+            return ZERO
+        marks = ",".join("?" for _ in roles)
+        rows = self.db.query(f"SELECT cost_krw FROM ai_runs WHERE role IN ({marks}) AND cost_krw IS NOT NULL", roles)
+        return sum((D(r[0]) for r in rows), ZERO)
+
+
+def _paper_account(book_id: str) -> str:
+    return f"paper:{book_id}"
+
+
+def build_context(paths: ModePaths, *, clock: Clock | None = None, config_path: Path | None = None,
+                  replay: MarketData | None = None, live_broker_factory: Any = None) -> AppContext:
+    """AppContext 생성. 비밀은 모드에 맞는 것만 로딩된다. live_broker_factory는 테스트 주입용."""
+    clock = clock or SystemClock()
+    mode = paths.mode
+    paths.ensure()
+    db = Database(paths.db_path)
+    db.migrate()
+    if db.get_meta("mode") is None:
+        db.set_meta("mode", mode)
+    elif db.get_meta("mode") != mode:
+        raise RuntimeError(f"DB 모드 불일치: {db.get_meta('mode')} ≠ {mode} (모드별 DB 격리 위반)")
+    secrets = load_mode_secrets(mode)
+    store_settings = SettingsStore(db)
+    version, settings = store_settings.ensure_initialized(config_path)
+    settings, locked = env_overrides(settings)
+    market_store = MarketStore(db, clock)
+    fx = FxService(db, provider=settings.fx.provider if mode != "offline_demo" else "manual", clock=clock,
+                   manual_rate=settings.fx.manual_usdkrw if mode != "offline_demo" else D("1400"),
+                   manual_as_of=settings.fx.manual_as_of)
+    ledger = Ledger(db, clock)
+    flags = Flags(db, clock)
+    holder: dict[str, AppContext] = {}
+    notifier = Notifier(db, clock, lambda: holder["ctx"].settings, secrets, mode)
+    incidents = Incidents(db, clock, notifier)
+    news = NewsCollector(db, clock)
+    ai = AIService(db=db, clock=clock, settings_fn=lambda: holder["ctx"].settings, budget_fn=lambda: holder["ctx"].budget(),
+                   provider_fn=lambda: holder["ctx"].provider(), news=news, incidents=incidents, mode=mode)
+    ctx = AppContext(mode=mode, paths=paths, db=db, clock=clock, secrets=secrets, store_settings=store_settings,
+                     settings_version=version, settings=settings, locked_settings=locked, market_store=market_store, fx=fx,
+                     ledger=ledger, equity=EquityTracker(db, clock), flags=flags, incidents=incidents, notifier=notifier,
+                     activations=LiveActivations(db, clock), news=news, ai=ai, code_version=code_version(paths.root),
+                     replay=replay)
+    holder["ctx"] = ctx
+    _setup_books(ctx)
+    _setup_markets(ctx, live_broker_factory)
+    return ctx
+
+
+def _setup_books(ctx: AppContext) -> None:
+    s = ctx.settings
+    principal = s.risk.principal_cap_krw
+    op_account = _paper_account(OPERATING) if ctx.mode in ("offline_demo", "internal_paper") else f"{ctx.mode}:by-market"
+    # live: 원금 0으로 시작하고 LIVE 활성화 때 min(시장 배정액, 실제 주문가능금액)만 명시적으로 배정한다.
+    ctx.ledger.create_book(OPERATING, kind="operating", setting=s.operating_setting,
+                           principal_krw=principal if ctx.mode != "live" else ZERO,
+                           virtual=ctx.mode in ("offline_demo", "internal_paper", "broker_sandbox"), account_id=op_account,
+                           description="운용 장부(선택된 단일 설정)" if ctx.mode != "live" else "실계좌 운용 장부(시장별 LIVE 활성화 시 배정)")
+    for st in SHADOW_SETTINGS:
+        ctx.ledger.create_book(f"shadow_{st}", kind="shadow", setting=st, principal_krw=principal, virtual=True,
+                               account_id=_paper_account(f"shadow_{st}"), description=f"{st} 설정 가상 비교 장부")
+    ctx.ledger.create_book("baseline_bh", kind="baseline", setting="BUY_HOLD", principal_krw=principal, virtual=True,
+                           account_id=_paper_account("baseline_bh"), description="허용 종목 동일비중 매수·보유 기준")
+    ctx.ledger.create_book("baseline_cash", kind="baseline", setting="CASH", principal_krw=principal, virtual=True,
+                           account_id=_paper_account("baseline_cash"), description="현금 유지 기준")
+
+
+def _paper(ctx: AppContext, book_id: str) -> PaperBroker:
+    pb = PaperBroker(ctx.db, _paper_account(book_id), ctx.market_store, ctx.clock, ctx.settings.execution.paper)
+    principal = ctx.ledger.principal(book_id)
+    pb.fund("KRW", principal)
+    return pb
+
+
+def _executor(ctx: AppContext, broker: BrokerAdapter) -> OrderExecutor:
+    return OrderExecutor(db=ctx.db, ledger=ctx.ledger, broker=broker, store=ctx.market_store, fx=ctx.fx, flags=ctx.flags,
+                         incidents=ctx.incidents, clock=ctx.clock, settings_fn=lambda: ctx.settings, mode=ctx.mode)
+
+
+def _setup_markets(ctx: AppContext, live_broker_factory: Any) -> None:
+    from aifund.brokers.kis import KisBroker, KisClient, KisMarketData
+    from aifund.brokers.upbit import UpbitBroker, UpbitMarketData
+
+    s = ctx.settings
+    for book in ("shadow_A", "shadow_B", "shadow_C", "baseline_bh"):
+        ctx.shadow_executors[book] = _executor(ctx, _paper(ctx, book))
+    op_paper = _executor(ctx, _paper(ctx, OPERATING)) if ctx.mode in ("offline_demo", "internal_paper") else None
+    kis_data_client = None
+    for market, ms in s.markets.items():
+        if not ms.enabled:
+            continue
+        data: MarketData | None = None
+        reason = ""
+        if ctx.replay is not None:
+            data, reason = ctx.replay, "재생 데이터(명시적)"
+        elif ctx.mode == "offline_demo":
+            data, reason = DemoMarketData(ctx.clock), "데모(가짜 데이터)"
+        elif market == "crypto":
+            data, reason = UpbitMarketData(clock=ctx.clock), "업비트 공개 시세"
+        elif ctx.secrets.kis_data is not None:
+            if kis_data_client is None:
+                kis_data_client = KisClient(ctx.secrets.kis_data, token_cache_dir=ctx.paths.secrets_dir, clock=ctx.clock)
+            data, reason = KisMarketData(kis_data_client, clock=ctx.clock), "KIS 시세"
+        else:
+            reason = "미연결: KIS 시세용 앱키(KIS_DATA_* 또는 KIS_LIVE_*) 미설정"
+        broker: BrokerAdapter | None = None
+        breason = ""
+        account = ms.account_id
+        if ctx.mode in ("offline_demo", "internal_paper"):
+            broker, breason, account = (op_paper.broker if op_paper else None), "내부 모의체결", _paper_account(OPERATING)
+        elif live_broker_factory is not None:
+            inner = live_broker_factory(market, ms)
+            broker = LiveGuardedBroker(inner, market, ctx.mode, ctx.activations, lambda: ctx.settings) if ctx.mode == "live" else inner
+            breason = "테스트 주입 브로커"
+        elif ctx.mode == "broker_sandbox":
+            if market == "crypto":
+                breason = "미지원: 업비트 공식 모의투자 환경 미확인"
+            elif ctx.secrets.kis_trade is None or ctx.secrets.kis_trade.env != "demo":
+                breason = "미연결: KIS_SANDBOX_* 키 미설정"
+            else:
+                client = KisClient(ctx.secrets.kis_trade, token_cache_dir=ctx.paths.secrets_dir, clock=ctx.clock)
+                broker, breason = KisBroker(ms.account_id, market, client, live_money=False, clock=ctx.clock), "KIS 모의투자"
+        elif ctx.mode == "live":
+            inner_b: BrokerAdapter | None = None
+            if ms.broker == "upbit" and market == "crypto":
+                if ctx.secrets.upbit is None:
+                    breason = "미연결: UPBIT_LIVE_ACCESS_KEY/SECRET_KEY 미설정"
+                else:
+                    inner_b = UpbitBroker(ms.account_id, ctx.secrets.upbit, live_money=True, clock=ctx.clock)
+            elif ms.broker == "kis" and market in ("kr_stock", "us_stock"):
+                if ctx.secrets.kis_trade is None or ctx.secrets.kis_trade.env != "real":
+                    breason = "미연결: KIS_LIVE_* 키 미설정"
+                else:
+                    client = KisClient(ctx.secrets.kis_trade, token_cache_dir=ctx.paths.secrets_dir, clock=ctx.clock)
+                    inner_b = KisBroker(ms.account_id, market, client, live_money=True, clock=ctx.clock)
+            else:
+                breason = f"지원하지 않는 조합: {market}/{ms.broker}"
+            if inner_b is not None:
+                broker = LiveGuardedBroker(inner_b, market, "live", ctx.activations, lambda: ctx.settings)
+                breason = "실계좌(LIVE 가드: 활성화 전 주문 차단)"
+        if op_paper is not None and broker is op_paper.broker:
+            executor = op_paper
+        else:
+            executor = _executor(ctx, broker) if broker is not None else None
+        meta = None
+        if broker is not None and ctx.mode in ("live", "broker_sandbox") and broker.capabilities.instrument_meta:
+            meta = broker.instrument_meta
+        collector = SnapshotCollector(ctx.db, ctx.market_store, data, ctx.clock, meta) if data is not None else None
+        ctx.markets[market] = MarketRuntime(market, data, reason, collector, account, executor, broker, breason)

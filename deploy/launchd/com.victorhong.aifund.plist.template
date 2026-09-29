@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  빅터홍컴퍼니 AI 투자회사 LaunchAgent 템플릿.
+  scripts/macos/install_launchd.sh 가 __ROOT__, __MODE__, __PROGRAM__ 을 채워 ~/Library/LaunchAgents 에 설치한다.
+  - LaunchAgent는 사용자가 로그인한 동안에만 실행된다(FileVault 재부팅 후 로그인 전에는 실행 불가).
+  - KeepAlive.SuccessfulExit=false: 비정상 종료(crash) 시에만 재실행. `aifund stop`의 정상 종료는 재실행하지 않음.
+  - 시스템 잠자기·보안 설정은 건드리지 않는다.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.victorhong.aifund</string>
+  <key>ProgramArguments</key>
+  <array>
+__PROGRAM__
+  </array>
+  <key>WorkingDirectory</key>
+  <string>__ROOT__</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>AIFUND_MODE</key>
+    <string>__MODE__</string>
+    <key>AIFUND_HOME</key>
+    <string>__ROOT__</string>
+    <key>PYTHONUNBUFFERED</key>
+    <string>1</string>
+    <key>LANG</key>
+    <string>ko_KR.UTF-8</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+  <key>ExitTimeOut</key>
+  <integer>90</integer>
+  <key>StandardOutPath</key>
+  <string>__ROOT__/var/launchd.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>__ROOT__/var/launchd.err.log</string>
+</dict>
+</plist>

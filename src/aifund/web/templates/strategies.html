@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block title %}전략·비교{% endblock %}
+{% block content %}
+<div class="card">
+  <h2>A/B/C 비교(같은 스냅샷, 독립 가상 장부) · 기준선</h2>
+  <table>
+    <tr><th>장부</th><th>설정</th><th class="n">원금</th><th class="n">평가자산</th><th class="n">수익률</th><th class="n">거래비용 차감 손익</th>
+        <th class="n">비용 전 손익</th><th class="n">수수료</th><th class="n">AI 비용</th><th class="n">AI 포함 손익</th><th class="n">최대낙폭</th>
+        <th class="n">회전율</th><th class="n">체결 수</th><th class="n">평균 노출</th><th class="n">장애</th><th>데이터</th></tr>
+    {% for m in d.comparison.books %}
+    <tr>
+      <td>{{ m.book_id|label('book') }}{% if m.virtual %} <span class="chip">가상</span>{% endif %}</td><td>{{ m.setting }}</td>
+      <td class="n">{{ m.principal|krw }}</td><td class="n">{{ m.equity|krw }}</td><td class="n">{{ m.return_pct|pct }}</td>
+      <td class="n">{{ m.pnl_net|krw(True) }}</td><td class="n">{{ m.pnl_gross|krw(True) }}</td><td class="n">{{ m.fees|krw }}</td>
+      <td class="n">{{ m.ai_cost|krw }}</td><td class="n">{{ m.pnl_after_ai|krw(True) }}</td><td class="n">{{ m.max_drawdown_pct|pct }}</td>
+      <td class="n">{{ m.turnover|num(2) }}</td><td class="n">{{ m.trades }}</td><td class="n">{{ m.avg_exposure_pct|pct(1) }}</td><td class="n">{{ m.faults }}</td>
+      <td>{% if m.sufficient %}<span class="ok">분석 가능</span>{% else %}<span class="warn">데이터 부족({{ '%.1f'|format(m.days) }}일)</span>{% endif %}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  <ul class="small">{% for n in d.comparison.notes %}<li>{{ n }}</li>{% endfor %}
+    <li>비용 배분: 규칙 전략(A)에는 AI 비용 0, B에는 연구 AI 비용 전액, C에는 연구+검증 AI 비용 전액을 반영(공유 비용을 나누지 않음). 수수료는 체결 수량 비율로 전략에 배분.</li>
+    <li>가상 장부의 원금은 실제 사용 가능 예산에 합산되지 않습니다. 승률·연환산 수익률은 표시하지 않습니다.</li></ul>
+</div>
+
+<div class="card">
+  <h2>전략 봇(비교 실험용 초기 전략 — 검증된 수익 전략 아님)</h2>
+  <table><tr><th>전략</th><th>가설</th><th>활성</th><th>슬리브</th><th>파라미터</th><th>버전</th></tr>
+  {% for s in d.strategies %}
+    <tr><td>{{ s.title }}</td><td class="small">{{ s.hypothesis }}</td><td>{{ '예' if s.enabled else '아니오' }}</td><td>{{ s.sleeve }}</td>
+    <td class="small">{{ s.params if s.params else '기본값' }}</td><td>{{ s.version }}</td></tr>
+  {% endfor %}
+  <tr><td>AI 슬리브</td><td class="small">연구 AI 제안(B/C 설정에서만 운용, A에서는 현금 유지)</td><td>-</td><td>{{ d.sleeves.ai_research }}</td><td></td><td></td></tr>
+  </table>
+</div>
+
+<div class="card">
+  <h2>운용 장부 전략별 성과</h2>
+  <table><tr><th>전략</th><th class="n">평가액</th><th class="n">실현</th><th class="n">미실현</th><th class="n">수수료</th><th class="n">체결 배분 수</th></tr>
+  {% for sid, st in d.operating.by_strategy.items() %}
+    <tr><td>{{ sid|label('strategy') }}</td><td class="n">{{ st.value|krw }}</td><td class="n">{{ st.realized|krw(True) }}</td>
+    <td class="n">{{ st.unrealized|krw(True) }}</td><td class="n">{{ st.fees|krw }}</td><td class="n">{{ st.trades }}</td></tr>
+  {% else %}<tr><td colspan="6" class="muted">아직 거래 없음</td></tr>{% endfor %}
+  </table>
+  <p class="small muted">전략별 합계 = 장부 실제 손익(내부 상계는 제로섬, 수수료는 체결 비율 배분).</p>
+</div>
+
+<div class="card">
+  <h2>최근 신호(운용 장부 기준)</h2>
+  <table><tr><th>전략</th><th>종목</th><th>행동</th><th>목표 비중</th><th>근거</th><th>시각</th></tr>
+  {% for s in d.signals %}
+    <tr><td>{{ s.strategy_id|label('strategy') }}</td><td>{{ s.instrument_id }}</td><td>{{ s.action|label('action') }}</td>
+    <td>{{ s.target_weight }}</td><td class="small">{{ s.rationale }}</td><td>{{ s.created_at|kst }}</td></tr>
+  {% else %}<tr><td colspan="6" class="muted">신호 없음</td></tr>{% endfor %}
+  </table>
+</div>
+
+<div class="card">
+  <h2>장부별 보유(가상 장부 포함)</h2>
+  <table><tr><th>장부</th><th>전략</th><th>종목</th><th class="n">수량</th><th class="n">평균단가</th><th class="n">현재가</th><th class="n">미실현</th><th class="n">실현</th><th>진입</th></tr>
+  {% for p in d.positions %}
+    <tr><td>{{ p.book|label('book') }}</td><td>{{ p.strategy|label('strategy') }}</td><td>{{ p.instrument }}</td><td class="n">{{ p.qty|num }}</td>
+    <td class="n">{{ p.avg|num(2) }}</td><td class="n">{{ p.price|num(2) }}</td><td class="n">{{ p.unreal|num(0) }}</td><td class="n">{{ p.realized|num(0) }}</td><td>{{ p.opened_at|kst }}</td></tr>
+  {% else %}<tr><td colspan="9" class="muted">없음</td></tr>{% endfor %}
+  </table>
+</div>
+{% endblock %}
