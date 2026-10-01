@@ -39,6 +39,7 @@ from aifund.domain.models import (
     SubmitResult,
 )
 from aifund.ledger.ledger import Ledger
+from aifund.notify import Notifier
 
 log = logging.getLogger(__name__)
 
@@ -96,7 +97,9 @@ class OrderExecutor:
         clock: Clock,
         settings_fn: Callable[[], Settings],
         mode: str,
+        notifier: Notifier | None = None,
     ) -> None:
+        self.notifier = notifier
         self.db = db
         self.ledger = ledger
         self.broker = broker
@@ -161,6 +164,33 @@ class OrderExecutor:
         c.execute(f"UPDATE orders SET {', '.join(sets)} WHERE order_id=?", vals)
         if frm != to.value or detail:
             self._event(c, row["order_id"], frm, to.value, detail)
+        if frm != to.value:
+            self._notify_order(row, to, detail, cols)
+
+    _ORDER_NOTE = {
+        OrderStatus.SUBMITTED: "주문 접수",
+        OrderStatus.PARTIALLY_FILLED: "부분 체결",
+        OrderStatus.FILLED: "체결 완료",
+        OrderStatus.CANCELED: "주문 취소",
+        OrderStatus.REJECTED: "주문 거부",
+    }
+
+    def _notify_order(self, row: sqlite3.Row, to: OrderStatus, detail: dict, cols: dict) -> None:
+        label = self._ORDER_NOTE.get(to)
+        if self.notifier is None or label is None:
+            return
+        try:
+            side = "매수" if row["side"] == "buy" else "매도"
+            filled = D(row["filled_qty"])
+            lines = [f"{row['instrument_id']} {side} {row['qty']}주/개 @ {row['limit_price']}"]
+            if filled > 0:
+                lines.append(f"체결 {filled} / 평균 {D(row['filled_amount']) / filled:.8g}")
+            why = detail.get("message") or detail.get("reason") or cols.get("last_error")
+            if why:
+                lines.append(f"사유: {why}")
+            self.notifier.notify_order(f"{label} [{row['market']}]", "\n".join(lines) + f"\n주문 {row['order_id']}")
+        except Exception:  # 알림 실패가 주문 처리·원장 반영을 막으면 안 된다
+            log.warning("주문 알림 생성 실패", exc_info=True)
 
     # ------------------------------------------------------------------ 예약·생성
     def _exposure_krw(self, c: sqlite3.Connection, book_id: str) -> Decimal:
@@ -332,6 +362,8 @@ class OrderExecutor:
         except ReservationDenied as exc:
             self.db.execute("UPDATE intents SET status='rejected', risk_reasons_json=? WHERE intent_id=?",
                             (dumps([f"예약 거부: {exc}"]), it.intent_id))
+            if self.notifier is not None:
+                self.notifier.notify_order(f"주문 거부 [{it.market}]", f"{it.instrument.instrument_id} {it.side.value} {it.qty}\n사유: 예약 거부: {exc}")
             return None, f"예약 거부: {exc}"
         st = await self.submit(oid)
         return oid, st.value

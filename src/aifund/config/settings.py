@@ -344,6 +344,7 @@ class NotifySettings(_Strict):
     telegram: bool = False
     webhook: bool = False
     min_severity: Literal["info", "warning", "critical"] = "warning"
+    orders: bool = True  # 주문 접수·체결·취소·거부 알림(min_severity와 무관하게 외부 채널로 전송)
 
 
 class WebSettings(_Strict):

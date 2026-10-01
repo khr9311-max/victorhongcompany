@@ -362,7 +362,7 @@ def _paper(ctx: AppContext, book_id: str) -> PaperBroker:
 
 def _executor(ctx: AppContext, broker: BrokerAdapter) -> OrderExecutor:
     return OrderExecutor(db=ctx.db, ledger=ctx.ledger, broker=broker, store=ctx.market_store, fx=ctx.fx, flags=ctx.flags,
-                         incidents=ctx.incidents, clock=ctx.clock, settings_fn=lambda: ctx.settings, mode=ctx.mode)
+                         incidents=ctx.incidents, clock=ctx.clock, settings_fn=lambda: ctx.settings, mode=ctx.mode, notifier=ctx.notifier)
 
 
 def _setup_markets(ctx: AppContext, live_broker_factory: Any) -> None:

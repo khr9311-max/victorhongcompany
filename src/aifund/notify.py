@@ -31,6 +31,7 @@ class Notifier:
         self.mode = mode
         self.queue: asyncio.Queue[tuple[str, str, str]] | None = None
         self._sent: list[float] = []
+        self._recent_orders: dict[tuple[str, str], float] = {}
 
     def channels(self) -> list[str]:
         s = self.settings_fn().notify
@@ -41,9 +42,21 @@ class Notifier:
             ch.append("webhook")
         return ch
 
-    def notify(self, severity: str, title: str, body: str) -> None:
+    def notify_order(self, title: str, body: str) -> None:
+        """주문 접수·체결·취소·거부 알림. min_severity와 무관하게 외부로 보낸다(notify.orders=false면 로그만)."""
+        key = (title, body)
+        now = time.monotonic()
+        if now - self._recent_orders.get(key, -3600.0) < 3600:
+            return  # 같은 내용의 반복 알림(예: 매 주기 같은 위험검사 거부) 억제
+        self._recent_orders[key] = now
+        if len(self._recent_orders) > 500:
+            self._recent_orders = {k: t for k, t in self._recent_orders.items() if now - t < 3600}
+        self.notify("info", title, body, force=self.settings_fn().notify.orders)
+
+    def notify(self, severity: str, title: str, body: str, *, force: bool = False) -> None:
         chans = self.channels()
-        external = [c for c in chans if c != "log"] if _SEV.get(severity, 1) >= _SEV[self.settings_fn().notify.min_severity] else []
+        external = ([c for c in chans if c != "log"]
+                    if force or _SEV.get(severity, 1) >= _SEV[self.settings_fn().notify.min_severity] else [])
         self.db.execute("INSERT INTO notifications(ts, severity, title, body, channels, status) VALUES (?,?,?,?,?,?)",
                         (to_iso(self.clock.now()), severity, title[:200], body[:2000], ",".join(["log", *external]),
                          "queued" if external else "logged"))

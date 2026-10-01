@@ -360,6 +360,8 @@ class DecisionCycle:
         if not dec.approved:
             res.orders.append({"book": book_id, "instrument": no.instrument_id, "side": no.side, "qty": str(no.qty),
                                "status": "risk_rejected", "reasons": dec.reasons})
+            ctx.notifier.notify_order(f"주문 거부(위험검사) [{inst.market}]",
+                                      f"{no.instrument_id} {no.side} {no.qty}\n사유: {'; '.join(dec.reasons)[:300]}")
             with ctx.db.tx() as c:
                 for pid in proposal_ids:
                     if pid:
