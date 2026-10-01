@@ -18,10 +18,44 @@ def _views(facts: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
+def _regime(f: dict[str, Any]) -> str:
+    r = f.get("ret_24bar_pct")
+    return "insufficient_data" if r is None else ("uptrend" if r > 1 else "downtrend" if r < -3 else "range")
+
+
 def demo_responder(system: str, user: str) -> dict[str, Any]:
     data = json.loads(user)
     phase = data.get("phase", "research")
     facts = data.get("price_facts", [])
+    if phase == "news_analyst":
+        allowed = set(data.get("allowed_instruments", []))
+        return {
+            "summary": "[데모] 뉴스 사건 정리",
+            "events": [{"headline": "[데모] 수집된 기사", "instrument_ids": [i for i in s.get("instruments", []) if i in allowed],
+                        "category": "other", "direction": "unclear", "materiality": "low", "verification": "reported",
+                        "source_ids": [s["id"]], "note": "[데모]"} for s in data.get("sources_UNTRUSTED_DATA", [])[:5]],
+            "coverage_gaps": [],
+        }
+    if phase == "quant_analyst":
+        return {
+            "summary": "[데모] 가격 사실 기반 국면 판단",
+            "instruments": [{"instrument_id": f["instrument_id"], "regime": _regime(f), "volatility": "unknown", "liquidity": "unknown",
+                             "reading": "[데모] 24봉 수익률 기준", "source_ids": [f["id"]]} for f in facts],
+            "strategy_conditions": [{"strategy_id": sid, "regime_fit": "unclear", "reason": "[데모]", "source_ids": []}
+                                    for sid in ("trend_sma", "mean_reversion")],
+            "cost_notes": "[데모] 수수료·스프레드 고려", "data_gaps": [],
+        }
+    if phase == "risk_review":
+        book = [x["id"] for x in data["portfolio"]["items"] if x["id"] == "pf:book"]
+        verdicts = []
+        for p in data["proposals_under_review"]:
+            if p["target_weight"] > 0.25:  # 데모 리스크 매니저는 한 종목 AI 비중을 0.25로 줄인다
+                verdicts.append({"proposal_ref": p["proposal_ref"], "verdict": "cap", "max_weight": 0.25, "reasons": [
+                    {"category": "theme_concentration", "detail": "[데모] 한 종목 비중 축소", "source_ids": book}]})
+            else:
+                verdicts.append({"proposal_ref": p["proposal_ref"], "verdict": "approve", "max_weight": p["target_weight"],
+                                 "reasons": []})
+        return {"summary": "[데모] 리스크 매니저 판정", "verdicts": verdicts, "portfolio_concerns": []}
     if phase == "independent":
         return {"summary": "[데모] 독립 평가", "instrument_views": _views(facts), "key_risks": []}
     if phase == "review":

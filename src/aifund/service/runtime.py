@@ -325,15 +325,11 @@ class Runtime:
         return await mr.collector.build(market, self.ctx.settings.markets[market], self.ctx.settings.risk)  # type: ignore[index]
 
     async def run_research(self, market: str, trigger: str) -> str | None:
+        """AI 연구팀(애널리스트 → 수석 연구원) → 검증팀(검증 AI → 리스크 매니저)."""
         snap = await self._snapshot_for_ai(market)
         if snap is None:
             return None
-        rid = await self.ctx.ai.research(market, snap, self.cycle.signals_payload(snap), trigger)
-        if rid is not None:
-            row = self.ctx.db.query_one("SELECT valid FROM ai_reports WHERE report_id=?", (rid,))
-            if row and row["valid"]:
-                await self.ctx.ai.review(market, rid)
-        return rid
+        return await self.ctx.ai.run_desk(market, snap, self.cycle.signals_payload(snap), trigger)
 
     async def maybe_event_research(self, market: str) -> None:
         snap = self.cycle_last_snapshot(market)

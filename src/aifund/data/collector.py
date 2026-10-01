@@ -100,6 +100,7 @@ class SnapshotCollector:
         self.clock = clock
         self.meta_enricher = meta_enricher
         self.last_ok_at: dict[str, datetime] = {}
+        self._deep_tried: set[str] = set()  # 과거 캔들 보강을 시도한 종목·봉(프로세스당 한 번)
 
     async def refresh_instruments(self, market: str, symbols: list[str], force: bool = False) -> list[Instrument]:
         out: list[Instrument] = []
@@ -157,7 +158,20 @@ class SnapshotCollector:
                 self.store.save_candles(fetched)
             except Exception as exc:
                 issues.append(f"캔들 조회 실패: {exc}")
-            closed = self.store.closed_candles(inst.instrument_id, ms.candle, now, 400)
+            limit = ms.history_bars or 400
+            closed = self.store.closed_candles(inst.instrument_id, ms.candle, now, limit)
+            deep_key = f"{inst.instrument_id}:{ms.candle}"
+            if ms.history_bars and len(closed) < ms.history_bars and deep_key not in self._deep_tried:
+                self._deep_tried.add(deep_key)
+                try:  # 판단에 필요한 만큼 과거 캔들을 한 번 받아 채운다(업비트는 페이지 조회, 그 밖은 원천이 주는 만큼)
+                    history = getattr(self.source, "history", None)
+                    deep = await (history(inst, ms.candle, ms.history_bars) if history
+                                  else self.source.candles(inst, ms.candle, ms.history_bars))
+                    self.store.save_candles(deep)
+                    closed = self.store.closed_candles(inst.instrument_id, ms.candle, now, limit)
+                    notes.append(f"과거 캔들 보강: 완성봉 {len(closed)}개")
+                except Exception as exc:
+                    notes.append(f"과거 캔들 보강 실패: {exc}")
             if not closed:
                 issues.append("완성된 캔들 없음")
             elif expected is not None and closed[-1].close_time < expected - timedelta(seconds=1):

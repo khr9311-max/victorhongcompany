@@ -1,4 +1,4 @@
-"""전략 개선 후보(연구 AI 주간 검토 또는 사용자 입력).
+"""전략 개선 후보(전략 연구원 주간 검토 또는 사용자 입력).
 
 후보는 파라미터 변경만 담는 별도 설정이다. 실거래 전략을 자동으로 덮어쓰지 않으며, 임의 생성 코드를 실행하지 않는다.
 사용자는 실험(백테스트) 결과·변경 이유·되돌리기 방법을 보고 승격한다. 승격은 새 설정 버전으로 기록되고 되돌릴 수 있다.
@@ -96,7 +96,7 @@ def backtest_candidate(ctx: AppContext, candidate_id: str, market: str = "crypto
             candles[iid], insts[iid] = cs, inst
     if not candles:
         raise RuntimeError("저장된 캔들이 없습니다. `aifund backtest --fetch`로 먼저 수집하세요.")
-    cap = ms.allocation_krw * s.strategies.sleeves.get(row["strategy_id"], D("0.5"))
+    cap = ms.allocation_krw * s.strategies.sleeves_for(market).get(row["strategy_id"], D("0.5"))
     if next(iter(insts.values())).quote_ccy != "KRW":
         fx = ctx.fx.status(s.risk.max_fx_age_hours)
         if not fx.fresh or fx.rate is None:

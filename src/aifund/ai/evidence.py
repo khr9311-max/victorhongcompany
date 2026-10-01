@@ -1,8 +1,11 @@
-"""AI 입력 번들(공유 원자료). 연구·검증 AI는 같은 번들을 본다.
+"""AI 입력 번들(공유 원자료). 연구팀·검증팀은 같은 번들을 본다.
 
 - 가격 사실은 코드가 스냅샷에서 계산한 값이다(px:*). AI가 가격을 재계산하지 않는다.
 - 뉴스·공시(news:*, dart:*)는 출처 URL·발표시각·수집시각과 함께 '신뢰하지 않는 데이터'로 들어간다.
 - 번들 크기는 max_chars로 제한하며, 넘치면 오래된 뉴스부터 덜어낸다(잘린 사실을 data_status에 명시).
+- 애널리스트는 번들의 일부만 본다: 뉴스·공시 애널리스트는 뉴스·공시, 퀀트 애널리스트는 가격 사실·신호·비용.
+- 시각 기준(TIME_RULES): 가격 사실은 snapshot_time(마지막 완성봉 마감)까지의 봉, 뉴스·공시는 created_at(자료 수집·판단 시각)
+  전에 공개된 자료다. 일봉 주식은 snapshot_time이 전날 장 마감이라, 밤사이 뉴스를 '미래정보'로 버리지 않도록 명시한다.
 """
 
 from __future__ import annotations
@@ -14,6 +17,10 @@ from typing import Any
 
 from aifund.core.timeutil import to_iso
 from aifund.data.collector import Snapshot
+
+TIME_RULES = ("price_facts·strategy_signals는 snapshot_time(마지막 완성봉 마감)까지의 완성봉으로 계산한 값이다(호가는 quote_fetched_at 기준). "
+              "sources는 created_at(자료 수집·판단 시각) 전에 공개된 자료라 판단에 쓸 수 있다(snapshot_time 뒤에 발표됐어도 미래정보 아님). "
+              "created_at 이후 정보는 존재하지 않는다.")
 
 
 @dataclass
@@ -38,6 +45,7 @@ class Bundle:
             "market": self.market,
             "snapshot_time": to_iso(self.snapshot_time),
             "created_at": to_iso(self.created_at),
+            "time_rules": TIME_RULES,
             "allowed_instruments": self.allowed_instruments,
             "data_status": self.data_status,
             "costs": self.costs,
@@ -48,6 +56,16 @@ class Bundle:
         if extra:
             d.update(extra)
         return d
+
+    def news_payload(self, extra: dict[str, Any]) -> dict[str, Any]:
+        """뉴스·공시 애널리스트 입력: 뉴스·공시와 종목 이름(가격·신호 제외)."""
+        d = {k: v for k, v in self.payload(extra).items() if k not in ("price_facts", "strategy_signals", "costs")}
+        d["instrument_names"] = {f["instrument_id"]: f.get("name") for f in self.price_facts}
+        return d
+
+    def quant_payload(self, extra: dict[str, Any]) -> dict[str, Any]:
+        """퀀트 애널리스트 입력: 가격 사실·전략 신호·비용(뉴스 제외)."""
+        return {k: v for k, v in self.payload(extra).items() if k != "sources_UNTRUSTED_DATA"}
 
     def to_user_text(self, max_chars: int, extra: dict[str, Any] | None = None) -> str:
         while True:

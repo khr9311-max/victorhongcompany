@@ -5,7 +5,7 @@
 <div class="page-head">
   <div class="grow">
     <h1>전략·비교</h1>
-    <p class="sub">같은 시점의 데이터로 A(규칙만)·B(+연구 AI)·C(+연구·검증 AI)를 각자 가상 장부에서 독립 운용해 비교합니다. 운용 장부는 설정 {{ d.operating_setting|label('setting') }}.</p>
+    <p class="sub">같은 시점의 데이터로 A(규칙만)·B(+AI 연구팀)·C(+AI 연구팀·검증팀)를 각자 가상 장부에서 독립 운용해 비교합니다. 운용 장부는 설정 {{ d.operating_setting|label('setting') }}.</p>
   </div>
 </div>
 
@@ -31,14 +31,14 @@
     {% endfor %}
   </table></div>
   <ul class="small muted" style="margin:10px 0 0; padding-left:18px">{% for n in d.comparison.notes %}<li>{{ n }}</li>{% endfor %}
-    <li>비용 배분: 규칙 전략(A)에는 AI 비용 0, B에는 연구 AI 비용 전액, C에는 연구+검증 AI 비용 전액을 반영(공유 비용을 나누지 않음). 수수료는 체결 수량 비율로 전략에 배분.</li>
+    <li>비용 배분: 규칙 전략(A)에는 AI 비용 0, B에는 연구팀(뉴스·퀀트 애널리스트, 수석 연구원) 비용 전액, C에는 연구팀+검증팀(검증 AI, 리스크 매니저) 비용 전액을 반영(공유 비용을 나누지 않음). 주간 전략 연구원 비용은 A/B/C에 넣지 않음. 수수료는 체결 수량 비율로 전략에 배분.</li>
     <li>가상 장부의 원금은 실제 사용 가능 예산에 합산되지 않습니다. 승률·연환산 수익률은 표시하지 않습니다.</li></ul>
 </section>
 
 <div class="grid g2">
   <section class="card">
     <h2>전략 봇</h2>
-    <p class="sub">비교 실험용 초기 전략 — 검증된 수익 전략이 아닙니다.</p>
+    <p class="sub">비교 실험용 전략 — 검증된 수익 전략이 아닙니다. '연구소' 전략은 과거 데이터 검증에서 무작위 진입보다 낫다는 근거가 나오지 않았습니다(docs/strategy-lab.md).</p>
     <div class="bots">
     {% for s in d.strategies %}
       <div class="bot">
@@ -49,8 +49,8 @@
       </div>
     {% endfor %}
       <div class="bot">
-        <div class="row-gap"><b>AI 슬리브</b><span class="badge">슬리브 {{ d.sleeves.ai_research }}</span></div>
-        <p class="small">연구 AI 제안(B/C 설정에서만 운용, A에서는 현금 유지)</p>
+        <div class="row-gap"><b>AI 슬리브</b><span class="badge">슬리브 {{ d.ai_sleeve }}</span></div>
+        <p class="small">수석 연구원 제안(B/C 설정에서만 운용, C는 검증 AI·리스크 매니저를 통과한 제안만, A에서는 현금 유지)</p>
       </div>
     </div>
   </section>

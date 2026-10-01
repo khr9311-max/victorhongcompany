@@ -62,7 +62,9 @@ class LLMProvider(ABC):
         return None
 
     @abstractmethod
-    async def complete_json(self, system: str, user: str, schema: dict[str, Any], max_tokens: int) -> LLMResult: ...
+    async def complete_json(self, system: str, user: str, schema: dict[str, Any], max_tokens: int,
+                            effort: str | None = None) -> LLMResult:
+        """effort: 이 호출만의 추론 강도(없으면 공급자 기본값). 직원마다 다르게 줄 때 쓴다."""
 
     async def close(self) -> None:
         return None
@@ -124,13 +126,14 @@ class AnthropicProvider(LLMProvider):
             log.warning("토큰 계산 실패(보수적 추정 사용): %s", self._wrap(exc))
             return None
 
-    async def complete_json(self, system: str, user: str, schema: dict[str, Any], max_tokens: int) -> LLMResult:
+    async def complete_json(self, system: str, user: str, schema: dict[str, Any], max_tokens: int,
+                            effort: str | None = None) -> LLMResult:
         req: dict[str, Any] = {
             "model": self.model,
             "max_tokens": max_tokens,
             "system": system,
             "messages": [{"role": "user", "content": user}],
-            "output_config": {"format": {"type": "json_schema", "schema": schema}, "effort": self.effort},
+            "output_config": {"format": {"type": "json_schema", "schema": schema}, "effort": effort or self.effort},
         }
         try:
             if self.use_fallbacks:
@@ -191,7 +194,8 @@ class OllamaProvider(LLMProvider):
         self.host = host.rstrip("/")
         self._client = httpx.AsyncClient(timeout=timeout)
 
-    async def complete_json(self, system: str, user: str, schema: dict[str, Any], max_tokens: int) -> LLMResult:
+    async def complete_json(self, system: str, user: str, schema: dict[str, Any], max_tokens: int,
+                            effort: str | None = None) -> LLMResult:
         body = {
             "model": self.model,
             "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
@@ -227,9 +231,12 @@ class DemoProvider(LLMProvider):
         super().__init__(model)
         self.responder = responder
         self.calls: list[tuple[str, str]] = []
+        self.efforts: list[str | None] = []  # 호출별로 요청된 추론 강도(테스트 확인용)
 
-    async def complete_json(self, system: str, user: str, schema: dict[str, Any], max_tokens: int) -> LLMResult:
+    async def complete_json(self, system: str, user: str, schema: dict[str, Any], max_tokens: int,
+                            effort: str | None = None) -> LLMResult:
         self.calls.append((system, user))
+        self.efforts.append(effort)
         data = self.responder(system, user)
         text = json.dumps(data, ensure_ascii=False)
         return LLMResult(text=text, usages=[LLMUsage(self.model, len(user) // 3, len(text) // 3)], stop_reason="end_turn",

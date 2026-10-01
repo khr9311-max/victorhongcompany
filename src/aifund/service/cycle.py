@@ -29,6 +29,7 @@ from aifund.portfolio.allocator import NetOrder, TargetInput
 from aifund.risk.engine import RiskInputs, evaluate
 from aifund.service.context import OPERATING, AppContext
 from aifund.strategies.base import PositionView, Signal, StrategyContext, build_strategies
+from aifund.strategies.lab import is_lab, lab_strategies, strategy_version
 
 log = logging.getLogger(__name__)
 
@@ -85,7 +86,9 @@ class DecisionCycle:
     def _signals(self, snap: Snapshot, book_id: str) -> dict[str, list[Signal]]:
         s = self.ctx.settings
         out: dict[str, list[Signal]] = {}
-        for strat in build_strategies(s.strategies.model_dump(include={"trend_sma", "mean_reversion"})):
+        strategies = build_strategies(s.strategies.model_dump(include={"trend_sma", "mean_reversion"}))
+        strategies += lab_strategies(s.strategies, snap.market)  # 전략 연구소 변형(설정 strategies.lab)
+        for strat in strategies:
             ctx = StrategyContext(snap, self._positions_by_strategy(book_id, strat.strategy_id), self.ctx.clock.now())
             out[strat.strategy_id] = strat.evaluate(ctx)
         return out
@@ -179,23 +182,22 @@ class DecisionCycle:
 
     def _store_signals(self, cid: str, snap: Snapshot, signals: dict[str, list[Signal]]) -> None:
         now = to_iso(self.ctx.clock.now())
-        from aifund.strategies.base import REGISTRY
-
         with self.ctx.db.tx() as c:
             for sid, sigs in signals.items():
                 for sg in sigs:
                     c.execute(
                         "INSERT INTO signals(cycle_id, snapshot_id, strategy_id, strategy_version, instrument_id, action, target_weight, "
                         "rationale, indicators_json, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
-                        (cid, snap.snapshot_id, sid, REGISTRY[sid].version, sg.instrument_id, sg.action.value,
+                        (cid, snap.snapshot_id, sid, strategy_version(sid), sg.instrument_id, sg.action.value,
                          dstr(sg.target_weight) if sg.target_weight is not None else "keep", sg.rationale, dumps(sg.indicators), now),
                     )
 
     def signals_payload(self, snap: Snapshot) -> list[dict[str, Any]]:
+        """AI 연구팀 입력용 봇 신호. AI 출력 형식(봇 적합도)은 봇 A·B만 다루므로 연구소 전략 신호는 넣지 않는다."""
         sigs = self._signals(snap, OPERATING)
         return [{"strategy_id": sid, "instrument_id": x.instrument_id, "action": x.action.value,
                  "target_weight": str(x.target_weight) if x.target_weight is not None else "keep", "rationale": x.rationale}
-                for sid, lst in sigs.items() for x in lst]
+                for sid, lst in sigs.items() if not is_lab(sid) for x in lst]
 
     async def _run_book(self, cid: str, book_id: str, snap: Snapshot, executor: OrderExecutor, res: CycleResult) -> None:
         ctx = self.ctx
@@ -236,7 +238,7 @@ class DecisionCycle:
         capital = ctx.market_capital(book_id, market)
 
         def sleeve_equity(strategy_id: str, iid: str) -> Decimal | None:
-            w = s.strategies.sleeves.get(strategy_id, ZERO)
+            w = s.strategies.sleeves_for(market).get(strategy_id, ZERO)
             st = val.by_market_strategy.get(market, {}).get(strategy_id, {})
             krw = w * capital + st.get("realized", ZERO) + st.get("unrealized", ZERO)
             return self._to_quote(krw, instruments[iid])
@@ -377,34 +379,45 @@ class DecisionCycle:
         ctx.equity.record(val, ctx.ai_cost_for_setting(ctx.book_setting(book_id)), ctx.settings.risk)
 
     async def _baseline(self, cid: str, snap: Snapshot, res: CycleResult) -> None:
-        """매수·보유 기준 장부: 처음 한 번 허용 종목을 동일비중으로 산다(이후 보유)."""
+        """매수·보유 기준 장부: 허용 종목을 동일비중으로 사서 보유한다.
+
+        종목별 매입 원가가 동일비중 몫의 90%에 못 미칠 때만 채워 산다. 그래서 가격 변동으로는 사고팔지 않고,
+        모의 원금이 늘면 늘어난 몫만 같은 방식으로 더 산다(1회 주문 한도로 덜 산 몫도 다음 주기에 채운다).
+        한 번 샀다가 모두 정리된 종목은 다시 사지 않는다.
+        """
         ctx = self.ctx
         book_id = "baseline_bh"
         executor = ctx.shadow_executors.get(book_id)
         if executor is None:
             return
         s = ctx.settings
-        held = ctx.ledger.held_instruments(book_id)
+        held = {p.instrument_id: p for p in ctx.ledger.positions(book_id) if p.qty > 0}
         pending = executor.pending_buy_instruments(book_id)
-        todo = [it for iid, it in snap.items.items() if iid not in held and iid not in pending]
         ever = {r[0] for r in ctx.db.query("SELECT DISTINCT instrument_id FROM orders WHERE book_id=? AND status IN "
                                             "('filled','partially_filled')", (book_id,))}
-        todo = [it for it in todo if it.instrument.instrument_id not in ever]
-        if todo:
-            per = ctx.market_capital(book_id, snap.market) * Decimal("0.98") / max(1, len(snap.items))
-            for it in todo:
-                if not (it.ok and it.quote and it.quote.mid):
+        per = ctx.market_capital(book_id, snap.market) * Decimal("0.98") / max(1, len(snap.items))
+        for iid, it in snap.items.items():
+            if iid in pending or (iid in ever and iid not in held) or not (it.ok and it.quote and it.quote.mid):
+                continue
+            inst = it.instrument
+            basis = ZERO
+            if iid in held:
+                basis_krw, _ = ctx.fx.to_krw(held[iid].cost_basis, inst.quote_ccy, s.risk.max_fx_age_hours)
+                if basis_krw is None:
                     continue
-                inst = it.instrument
-                px = it.quote.mid
-                amt = self._to_quote(min(per, order_cap_krw(s.risk, inst)), inst)
-                if amt is None:
-                    continue
-                qty = floor_step(amt / px, inst.qty_step)
-                if qty <= 0:
-                    continue
-                await self._execute_net(cid, book_id, snap, executor, NetOrder(inst.instrument_id, "buy", qty, px, [(BOOK_STRATEGY, qty)], True),
-                                        [], None, res, purpose="baseline")
+                basis = basis_krw
+            gap = per - basis
+            if gap < per * Decimal("0.1"):
+                continue  # 이미 몫을 거의 채웠다
+            px = it.quote.mid
+            amt = self._to_quote(min(gap, order_cap_krw(s.risk, inst)), inst)
+            if amt is None:
+                continue
+            qty = floor_step(amt / px, inst.qty_step)
+            if qty <= 0:
+                continue
+            await self._execute_net(cid, book_id, snap, executor, NetOrder(inst.instrument_id, "buy", qty, px, [(BOOK_STRATEGY, qty)], True),
+                                    [], None, res, purpose="baseline")
         self.record_equity(book_id)
         # 현금 기준 장부는 거래 없음
         self.record_equity("baseline_cash")

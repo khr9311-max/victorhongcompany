@@ -4,7 +4,7 @@
 # 한도·종목·계좌·시세 공급자·운용 설정이 바뀌면 그 시장의 LIVE는 '재확인 필요'로 멈춥니다. AI는 설정을 바꿀 수 없습니다.
 # 아래 값은 '엔지니어링 프리셋'이며 검증된 최적 투자조건이 아닙니다.
 
-operating_setting = "A"          # 실제 주문에 쓰는 단일 설정: A(규칙만) / B(+연구 AI) / C(+연구·검증 AI)
+operating_setting = "A"          # 실제 주문에 쓰는 단일 설정: A(규칙만) / B(+AI 연구팀) / C(+AI 연구팀·검증팀)
 
 [risk]
 principal_cap_krw = "300000"
@@ -69,8 +69,8 @@ provider = "gemini"               # anthropic / gemini / ollama / disabled — �
 model = "gemini-3.8-flash"        # 아래 요율 표에 있어야 유료 자동 호출
 effort = "high"                   # Claude effort / Gemini 추론 강도(thinkingLevel)
 use_server_fallbacks = false      # Claude 전용: 모델 거절 시 서버측 폴백(비용은 실제 사용 모델 요율로 정산)
-monthly_budget_krw = "150000"     # 호출 폭주(버그) 방지용 안전 상한
-max_output_tokens = 16000         # 추론 토큰 포함 상한
+monthly_budget_krw = "300000"     # 호출 폭주(버그) 방지용 안전 상한(AI 직원 6명 기준 예상 월 7~9만 원)
+max_output_tokens = 32000         # 추론 토큰 포함 상한(16000은 추론 high에서 잘림 발생)
 max_input_chars = 60000
 max_news_items = 60
 timeout_sec = 300
@@ -82,6 +82,11 @@ weekly_review_time_kst = "09:10"
 event_move_pct = "5"
 max_event_calls_per_day = 3
 independent_review_pass = true
+# AI 직원(연구 화면 'AI 직원'): 연구 1회 = 뉴스·퀀트 애널리스트 → 수석 연구원 → 검증 AI(독립 평가·반론) → 리스크 매니저
+news_analyst_enabled = true       # 뉴스·공시를 사건별로 정리해 수석 연구원에게 전달
+quant_analyst_enabled = true      # 가격 사실·봇 신호로 국면·전략 적합도 판단
+risk_manager_enabled = true       # C 설정: 검증 통과한 AI 매수·유지 제안을 회사 전체 보유와 함께 축소·거절
+analyst_effort = "medium"         # 애널리스트 추론 강도(분류·정리 업무). high는 추론만으로 출력 한도를 넘겨 잘릴 수 있음(2026-09-30 실측)
 veto_rule_buys = true
 when_unavailable = "continue_rules"   # 또는 hold_new_risk
 fallback_usdkrw = "1500"

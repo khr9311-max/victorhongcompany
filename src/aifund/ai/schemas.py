@@ -111,6 +111,70 @@ class StrategyReviewReport(_M):
     improvement_ideas: list[ImprovementIdea]
 
 
+# ---------------- 연구팀 애널리스트 메모(수석 연구원 입력) ----------------
+
+
+class NewsEvent(_M):
+    headline: str = Field(max_length=300, description="사건 한 줄 요약(한국어, 원문 제목 복사 금지)")
+    instrument_ids: list[str] = Field(description="관련 허용 종목 ID. 시장 전반 사건이면 빈 배열")
+    category: Literal["earnings", "guidance_outlook", "product_demand", "regulation_legal", "macro_policy", "flows_supply",
+                      "corporate_action", "security_incident", "other"]
+    direction: Literal["positive", "negative", "mixed", "unclear"]
+    materiality: Literal["high", "medium", "low"]
+    verification: Literal["official", "reported", "opinion_or_rumor"] = Field(
+        description="official=공시·공식 발표, reported=언론 보도, opinion_or_rumor=전망·의견·루머")
+    source_ids: list[str] = Field(description="근거 source_id(1개 이상, 번들에 있는 것만)")
+    note: str = Field(max_length=400, description="주의점(이미 가격에 반영됐을 가능성, 오래된 사건, 중복 보도 등)")
+
+
+class NewsDigest(_M):
+    summary: str = Field(max_length=1200)
+    events: list[NewsEvent]
+    coverage_gaps: list[str] = Field(description="뉴스가 없거나 오래된 종목, 수집 실패 등 자료 공백")
+
+
+class InstrumentRegime(_M):
+    instrument_id: str
+    regime: Literal["uptrend", "downtrend", "range", "volatile", "insufficient_data"]
+    volatility: Literal["low", "normal", "high", "unknown"]
+    liquidity: Literal["ok", "caution", "unknown"] = Field(description="스프레드·거래대금 기준 체결 여건")
+    reading: str = Field(max_length=600, description="지표·신호 해석(숫자는 source_ids 인용)")
+    source_ids: list[str]
+
+
+class QuantMemo(_M):
+    summary: str = Field(max_length=1200)
+    instruments: list[InstrumentRegime]
+    strategy_conditions: list[StrategyCondition]
+    cost_notes: str = Field(max_length=400, description="수수료·스프레드 관점의 주의점")
+    data_gaps: list[str]
+
+
+# ---------------- 검증팀 리스크 매니저 ----------------
+
+RiskCategory = Literal["cross_market_concentration", "theme_concentration", "position_count", "liquidity", "volatility",
+                       "event_risk", "cost", "data_quality", "other"]
+
+
+class RiskPoint(_M):
+    category: RiskCategory
+    detail: str = Field(max_length=600)
+    source_ids: list[str]
+
+
+class RiskVerdict(_M):
+    proposal_ref: str
+    verdict: Literal["approve", "cap", "reject"]
+    max_weight: float = Field(ge=0, le=1, description="cap일 때 허용할 최대 목표 비중(AI 슬리브 대비). approve·reject면 제안 비중을 그대로 적는다")
+    reasons: list[RiskPoint]
+
+
+class RiskReview(_M):
+    summary: str = Field(max_length=1200)
+    verdicts: list[RiskVerdict]
+    portfolio_concerns: list[RiskPoint]
+
+
 # ---------------- 결정적 검증 ----------------
 
 
@@ -202,4 +266,53 @@ def validate_strategy_review(r: StrategyReviewReport, known_sources: set[str]) -
         _check_sources(idea.source_ids, known_sources, f"개선안 {idea.strategy_id}", errors)
         if not idea.changes:
             errors.append(f"개선안 {idea.strategy_id}: 변경 파라미터 없음")
+    return errors
+
+
+def validate_news_digest(d: NewsDigest, known_sources: set[str], allowed_instruments: set[str]) -> list[str]:
+    errors: list[str] = []
+    for i, e in enumerate(d.events):
+        where = f"뉴스 사건{i + 1}"
+        if not e.source_ids:
+            errors.append(f"{where}: 근거(source_ids) 없음")
+        _check_sources(e.source_ids, known_sources, where, errors)
+        for iid in e.instrument_ids:
+            if iid not in allowed_instruments:
+                errors.append(f"{where}: 미지원 종목 {iid}")
+    return errors
+
+
+def validate_quant_memo(m: QuantMemo, known_sources: set[str], allowed_instruments: set[str]) -> list[str]:
+    errors: list[str] = []
+    for r in m.instruments:
+        if r.instrument_id not in allowed_instruments:
+            errors.append(f"미지원 종목: {r.instrument_id}")
+        _check_sources(r.source_ids, known_sources, f"{r.instrument_id} 해석", errors)
+        _check_claim_text(r.reading, r.source_ids, f"{r.instrument_id} 해석", errors)
+    for sc in m.strategy_conditions:
+        _check_sources(sc.source_ids, known_sources, f"전략조건 {sc.strategy_id}", errors)
+        _check_claim_text(sc.reason, sc.source_ids, f"전략조건 {sc.strategy_id}", errors)
+    return errors
+
+
+def validate_risk_review(r: RiskReview, known_sources: set[str], proposal_refs: set[str]) -> list[str]:
+    errors: list[str] = []
+    seen: set[str] = set()
+    for v in r.verdicts:
+        if v.proposal_ref not in proposal_refs:
+            errors.append(f"검토 대상이 아닌 제안: {v.proposal_ref}")
+        if v.proposal_ref in seen:
+            errors.append(f"중복 판정: {v.proposal_ref}")
+        seen.add(v.proposal_ref)
+        if v.verdict in ("cap", "reject") and not v.reasons:
+            errors.append(f"{v.proposal_ref}: 축소·거절 근거 없음")
+        for p in v.reasons:
+            _check_sources(p.source_ids, known_sources, f"{v.proposal_ref} 위험", errors)
+            _check_claim_text(p.detail, p.source_ids, f"{v.proposal_ref} 위험", errors)
+    missing = proposal_refs - seen
+    if missing:
+        errors.append(f"판정 누락 제안: {sorted(missing)}")
+    for i, p in enumerate(r.portfolio_concerns):
+        _check_sources(p.source_ids, known_sources, f"포트폴리오 우려{i + 1}", errors)
+        _check_claim_text(p.detail, p.source_ids, f"포트폴리오 우려{i + 1}", errors)
     return errors

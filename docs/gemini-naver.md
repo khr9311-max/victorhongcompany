@@ -1,6 +1,6 @@
 # Gemini와 네이버 뉴스
 
-Gemini를 기존 연구·독립 평가·반론 검토 공급자로 선택할 수 있습니다. 네이버 검색 결과는 RSS와 함께 기존 근거 번들과 연구 화면에 표시됩니다. 원문 URL, 발표 시각, 수집 시각을 보관하고 같은 시장의 동일 URL은 중복 저장하지 않습니다.
+Gemini를 AI 직원 전체(뉴스·공시 애널리스트, 퀀트 애널리스트, 수석 연구원, 검증 AI의 독립 평가·반론, 리스크 매니저, 전략 연구원)의 공급자로 선택할 수 있습니다. 네이버 검색 결과는 RSS와 함께 기존 근거 번들과 연구 화면에 표시됩니다. 원문 URL, 발표 시각, 수집 시각을 보관하고 같은 시장의 동일 URL은 중복 저장하지 않습니다.
 
 ## 설정
 
@@ -16,10 +16,13 @@ Gemini를 기존 연구·독립 평가·반론 검토 공급자로 선택할 수
 provider = "gemini"
 model = "gemini-3.8-flash"
 effort = "high"                                    # Gemini 추론 강도(thinkingLevel: low·medium·high)
-research_focus = "AI·반도체·IT를 우선 검토한다."   # 선택: 연구·검증 AI에 전달할 대표 지시
+research_focus = "AI·반도체·IT를 우선 검토한다."   # 선택: AI 연구팀·검증 AI에 전달할 대표 지시
 use_server_fallbacks = false                       # Claude 전용 기능
-monthly_budget_krw = "150000"                      # 호출 폭주 방지용 상한
-max_output_tokens = 16000                          # 추론 토큰 포함
+monthly_budget_krw = "300000"                      # 호출 폭주 방지용 상한
+max_output_tokens = 32000                          # 추론 토큰 포함(16000은 추론 high에서 잘림 발생)
+news_analyst_enabled = true                        # AI 직원: 뉴스·공시 애널리스트
+quant_analyst_enabled = true                       # AI 직원: 퀀트 애널리스트
+risk_manager_enabled = true                        # AI 직원: 리스크 매니저(C 설정)
 crypto_research_interval_hours = 6                 # 코인: daily_research_time_kst부터 6시간마다
 stock_research_lead_min = 30                       # 주식: 거래일 개장 30분 전
 
@@ -49,17 +52,19 @@ us_stock = ["엔비디아 AI"]
 ### 모델·빈도 선택(2026-09-30, 비용보다 분석 품질 우선)
 
 - 모델: `gemini-3.8-flash` — 공식 문서 기준 최신 정식(Stable) Flash(2026-09-02 출시, 종료 일정 없음, 입력 1M·출력 64k 토큰). Pro 계열은 미리보기(`gemini-3.1-pro-preview`)뿐이라 상시 운영에 쓰지 않았습니다.
-- 추론 강도: 설정 `ai.effort`를 Gemini 3의 `generationConfig.thinkingConfig.thinkingLevel`로 보냅니다(low·medium·high, xhigh·max는 high). 3.8 Flash 기본값은 medium이며 내부 모의·LIVE 설정은 high입니다. Gemini 2.5 이하 모델에는 보내지 않습니다.
-- 연구 시각: 코인은 08:50부터 6시간마다(08:50·14:50·20:50·02:50), 국내·미국주식은 각 거래소 개장 30분 전(국내 08:30, 미국 한국시간 22:00·서머타임 해제 시 23:00)에 연구하고 이어서 검증합니다. 이전처럼 모든 시장을 08:50 한 번에 연구하면 미국주식은 14시간 지난 자료로 판단하게 됩니다.
-- 분량: 출력 상한 16,000토큰(추론 포함, 잘린 응답은 제안으로 쓰지 않음), 입력 최대 60,000자·뉴스 60건, 급변 시 시장별 하루 최대 3회 추가 연구.
-- 비용 추정: 호출 1회 입력 2~3만·출력 수천 토큰이면 약 50~70원, 하루 약 6세트(연구+독립 평가+검증)로 월 3~4만 원 안팎입니다. 2027-01-01부터 요율이 2배가 되어 자동으로 그 요율로 계산합니다. 월 한도 150,000원은 폭주 방지용입니다.
-- 참고 실측(이전 모델 `gemini-3.5-flash-lite`, 2026-09-29 실행): 호출 1회 입력 약 1.2~1.5만·출력 0.4~1.6천 토큰, 약 7~11원, 3개 시장 한 세트 약 75원.
+- 추론 강도: 설정 `ai.effort`를 Gemini 3의 `generationConfig.thinkingConfig.thinkingLevel`로 보냅니다(low·medium·high, xhigh·max는 high). 3.8 Flash 기본값은 medium이며 내부 모의·LIVE 설정은 high입니다. 뉴스·퀀트 애널리스트는 호출마다 `ai.analyst_effort`(기본 medium)를 보냅니다 — high로 둔 뉴스 애널리스트가 기사 60건을 정리하다 추론만으로 출력 한도 32,000토큰을 다 써서 잘렸고(2026-09-30 실측), [공식 문서](https://ai.google.dev/gemini-api/docs/thinking)도 잘림·지연을 줄이려면 출력 한도 대신 thinking_level을 낮추라고 권합니다. Gemini 2.5 이하 모델에는 보내지 않습니다.
+- 연구 시각: 코인은 08:50부터 6시간마다(08:50·14:50·20:50·02:50), 국내·미국주식은 각 거래소 개장 30분 전(국내 08:30, 미국 한국시간 22:00·서머타임 해제 시 23:00)에 연구팀이 연구하고 이어서 검증팀이 검토합니다. 이전처럼 모든 시장을 08:50 한 번에 연구하면 미국주식은 14시간 지난 자료로 판단하게 됩니다.
+- 분량: 출력 상한 32,000토큰(추론 포함, 잘린 응답은 제안으로 쓰지 않음), 입력 최대 60,000자·뉴스 60건, 급변 시 시장별 하루 최대 3회 추가 연구. 2026-09-30 실행에서 출력 상한 16,000토큰일 때 국내·미국 연구 3건이 추론 토큰 때문에 잘려(보고서 본문은 약 4천 자, 나머지는 추론) 상한을 올렸습니다.
+- 비용 추정: 연구 1회 = 직원 호출 약 6회(뉴스·퀀트 애널리스트, 수석 연구원, 검증 AI 독립 평가·반론, 리스크 매니저 — 리스크 매니저는 검증을 통과한 매수·유지 제안이 있을 때만). 호출 1회 약 40~100원이라 연구 1회 약 300~400원, 하루 약 6~8회로 월 7~9만 원 안팎입니다. 2027-01-01부터 요율이 2배가 되어 자동으로 그 요율로 계산합니다. 월 한도 300,000원은 폭주 방지용입니다.
+- 참고 실측(`gemini-3.8-flash`, 2026-09-30 23:03~23:07 KST, AI 직원 6명 코인 연구 1회·임시 DB): 뉴스 애널리스트(medium) 입력 1.7만·출력 0.4만 토큰 39원, 퀀트 애널리스트(medium) 0.3만·0.3만 18원, 수석 연구원 2.2만·1.4만 95원, 검증 AI 독립 평가 1.8만·0.9만 65원, 반론 2.7만·2.2만 141원, 리스크 매니저 1.2만·0.2만 24원 — 합계 383원, 약 3.5분. 같은 날 뉴스 애널리스트를 high로 돌린 시도는 출력 3.2만 토큰을 추론으로 다 써 잘렸습니다(179원).
+- 참고 실측(`gemini-3.8-flash`, 2026-09-30 01:27~01:35 KST, 직원 확장 전): 호출 1회 입력 약 1.8~2.3만·출력(추론 포함) 0.4~1.6만 토큰, 약 40~100원. 이전 모델 `gemini-3.5-flash-lite`(2026-09-29)는 호출 1회 약 7~11원, 3개 시장 한 세트 약 75원.
 
-REST generateContent를 사용하므로 google-genai SDK에 의존하지 않습니다(의존성 추가 없음). 이번 구현에는 Google 검색 Grounding, 네이버 데이터랩, 별도 거시 지표, 공급자가 다른 검증 AI는 포함하지 않았습니다. 연구와 검증은 선택한 동일 공급자를 사용합니다. 실거래 활성화와는 별개이며 `offline_demo`에서는 Gemini·네이버 키를 읽거나 해당 API를 호출하지 않습니다(데모 가짜 응답 사용).
+REST generateContent를 사용하므로 google-genai SDK에 의존하지 않습니다(의존성 추가 없음). 이번 구현에는 Google 검색 Grounding, 네이버 데이터랩, 별도 거시 지표, 공급자가 다른 검증 AI는 포함하지 않았습니다. AI 직원은 모두 선택한 동일 공급자·모델을 사용합니다(역할마다 지시·입력·출력 형식만 다름). 실거래 활성화와는 별개이며 `offline_demo`에서는 Gemini·네이버 키를 읽거나 해당 API를 호출하지 않습니다(데모 가짜 응답 사용).
 
 ## 확인한 공식 문서
 
 - [Gemini 구조화 출력](https://ai.google.dev/gemini-api/docs/generate-content/structured-output)
 - [Gemini 요율](https://ai.google.dev/gemini-api/docs/pricing): 2026-09-24 갱신본을 2026-09-30 확인, 무료/유료 티어의 데이터 사용 조건도 이 페이지에서 확인할 수 있습니다.
 - [Gemini 모델 목록](https://ai.google.dev/gemini-api/docs/models) · [지원 종료 일정](https://ai.google.dev/gemini-api/docs/deprecations) · [Gemini 3.8 Flash 변경 사항](https://ai.google.dev/gemini-api/docs/generate-content/latest-model)(thinkingLevel, 출력 64k): 2026-09-30 확인.
+- [Gemini 추론(thinking)](https://ai.google.dev/gemini-api/docs/thinking): 3.8 Flash 지원 수준 low·medium·high(기본 medium), 추론 토큰은 `max_output_tokens`에 포함되며 한도에 걸리면 잘린 채 과금, 잘림·지연을 줄이려면 thinking_level을 낮추라는 권고 — 2026-09-30 확인.
 - [네이버 뉴스 검색](https://github.com/naver/naver-openapi-guide/blob/master/ko/service-apis/search/news/news.md)

@@ -613,7 +613,7 @@ def cmd_backtest(args: argparse.Namespace) -> int:
 
     split = datetime.fromisoformat(args.split).replace(tzinfo=UTC) if args.split else None
     for st in build_strategies(ctx.settings.strategies.model_dump(include={"trend_sma", "mean_reversion"})):
-        cap_krw = ms.allocation_krw * ctx.settings.strategies.sleeves.get(st.strategy_id, 0)
+        cap_krw = ms.allocation_krw * ctx.settings.strategies.sleeves_for(market).get(st.strategy_id, 0)
         cap = cap_krw / usdkrw if usdkrw else cap_krw
         res = run_backtest(st, candles, insts, capital=cap, fee_rate=fee_rate,
                            slippage_bps=ctx.settings.execution.paper.slippage_bps, split_at=split)
@@ -713,6 +713,146 @@ def cmd_kiwoom_check(args: argparse.Namespace) -> int:
     return 0
 
 
+LAB_MIN_BARS = 120  # 지표·구간이 자리 잡을 최소 봉 수
+
+
+def _lab_source(mode: str, market: str) -> tuple[Any, str, bool]:
+    """연구소 수집 원천(조회 전용). 장부 DB·설정을 건드리지 않도록 운용 구성 없이 직접 만든다."""
+    if mode == "offline_demo":
+        from aifund.data.demo import DemoMarketData
+
+        return DemoMarketData(), "DEMO(가짜 데이터)", True
+    if market == "crypto":
+        from aifund.brokers.upbit import UpbitMarketData
+
+        return UpbitMarketData(), "upbit_public", False
+    from aifund.core.secrets import load_mode_secrets
+
+    secrets = load_mode_secrets(mode)
+    if secrets.kiwoom_data is not None:
+        from aifund.brokers.kiwoom import KiwoomMarketData, KiwoomReadClient, KiwoomUSMarketData
+
+        client = KiwoomReadClient(secrets.kiwoom_data)
+        cls = KiwoomUSMarketData if market == "us_stock" else KiwoomMarketData
+        return cls(client), f"kiwoom({secrets.kiwoom_data.env})", False
+    if secrets.kis_data is not None:
+        from aifund.brokers.kis import KisClient, KisMarketData
+
+        client = KisClient(secrets.kis_data, token_cache_dir=mode_paths(mode).ensure().secrets_dir)
+        return KisMarketData(client), "kis(최근 약 100봉만 제공)", False
+    raise SystemExit("주식 시세 키가 없습니다: .env에 KIWOOM_DATA_*(권장, 긴 과거 일봉) 또는 KIS_DATA_*를 설정하세요.")
+
+
+def cmd_lab(args: argparse.Namespace) -> int:
+    from aifund.lab import data as labdata
+    from aifund.lab.report import catalog_text
+
+    if args.lab_cmd == "catalog":
+        print(catalog_text(args.market))
+        return 0
+    if args.lab_cmd == "judge":
+        from aifund.lab import judge as labjudge
+
+        sa, sb = labjudge.load(Path(args.report_a)), labjudge.load(Path(args.report_b))
+        print(labjudge.render(sa, sb, labjudge.judge(sa, sb), top=args.top))
+        return 0
+    mode = _mode(args)
+    market = args.market
+    interval = args.candle or ("240m" if market == "crypto" else "1d")
+    if interval == "1w" and args.lab_cmd == "fetch":
+        raise SystemExit("주봉은 받은 일봉으로 만듭니다: `lab fetch --candle 1d` 뒤 `lab run --candle 1w`")
+    if market != "crypto" and interval not in ("1d", "1w"):
+        raise SystemExit("주식은 일봉(1d)·주봉(1w)만 지원합니다")
+    if interval not in ("1d", "1w") and not (interval.endswith("m") and interval[:-1] in ("15", "30", "60", "240")):
+        raise SystemExit("--candle은 1d·1w 또는 15m/30m/60m/240m 이어야 합니다")
+    paths = mode_paths(mode).ensure()
+    store = labdata.LabStore(paths.data_dir / "lab")
+    symbols = [s.strip() for s in args.symbols.split(",") if s.strip()] if args.symbols else None
+    if args.lab_cmd == "fetch":
+        return _lab_fetch(args, mode, store, market, interval, symbols)
+    return _lab_run(args, mode, store, market, interval, symbols)
+
+
+def _lab_fetch(args: argparse.Namespace, mode: str, store: Any, market: str, interval: str, symbols: list[str] | None) -> int:
+    from aifund.lab import data as labdata
+
+    days = args.days or (1095 if market == "crypto" else 3650)
+    source, label, demo = _lab_source(mode, market)
+
+    async def go() -> dict[str, int]:
+        syms = symbols
+        try:
+            if syms is None:
+                if market != "crypto":
+                    syms = labdata.default_symbols(market)[: args.top or None]
+                elif demo:
+                    syms = ["KRW-BTC", "KRW-ETH", "KRW-XRP"][: args.top or None]
+                else:
+                    syms = await labdata.upbit_universe(args.top or 30)
+            bars = labdata.bars_for_days(market, interval, days)
+            print(f"{label}에서 {len(syms)}종목 × 최대 {bars:,}봉({days}일) 수집 → {store.root}", flush=True)
+            return await labdata.fetch(store, source, market, interval, syms, bars, source_label=label, demo=demo,
+                                       progress=lambda m: print(m, flush=True))
+        finally:
+            await source.close()
+
+    res = asyncio.run(go())
+    ok = sum(1 for n in res.values() if n > 0)
+    print(f"완료: {ok}/{len(res)}종목 저장" + (" (일부 실패: 위 로그 확인)" if ok < len(res) else ""))
+    return 0 if ok else 1
+
+
+def _lab_run(args: argparse.Namespace, mode: str, store: Any, market: str, interval: str, symbols: list[str] | None) -> int:
+    from aifund.config.settings import PaperSettings, load_settings_file
+    from aifund.core.timeutil import UTC
+    from aifund.evaluation.backtest import side_fee_rate
+    from aifund.lab.bars import weekly
+    from aifund.lab.catalog import variants
+    from aifund.lab.engine import MODELS
+    from aifund.lab.exits import Costs
+    from aifund.lab.report import render, save, summarize
+    from aifund.lab.runner import run_lab
+
+    source_interval = "1d" if interval == "1w" else interval  # 주봉은 저장된 일봉을 묶어 만든다
+    syms = symbols or store.symbols(market, source_interval)
+    if not syms:
+        print(f"저장된 {market} {source_interval} 데이터가 없습니다. 먼저 `aifund lab fetch --market {market}`를 실행하세요.")
+        return 1
+    since = datetime.fromisoformat(args.since).replace(tzinfo=UTC) if args.since else None
+    bars_list, short = [], []
+    for s in syms:
+        b = store.load(market, source_interval, s, since=since)
+        if b is not None and interval == "1w":
+            b = weekly(b)
+        if b is None or len(b) < LAB_MIN_BARS:
+            short.append(s)
+        else:
+            bars_list.append(b)
+    if short:
+        print(f"제외(데이터 없음 또는 {LAB_MIN_BARS}봉 미만): {', '.join(short)}")
+    if not bars_list:
+        return 1
+    cfg = _config_path(mode)
+    paper = load_settings_file(cfg).execution.paper if cfg else PaperSettings()
+    costs = Costs(float(side_fee_rate(paper, market)), float(paper.slippage_bps) / 10000)
+    split = datetime.fromisoformat(args.split).replace(tzinfo=UTC) if args.split else None
+    vs = variants(market, args.entries.split(",") if args.entries else None, args.exits.split(",") if args.exits else None,
+                  args.families.split(",") if args.families else None,
+                  args.interpretations.split(",") if args.interpretations else None)
+    models = list(MODELS) if args.model == "both" else [args.model]
+    started = time.time()
+    print(f"{len(bars_list)}종목 · 변형 {len(vs)}개 시험 중(체결 가정: {', '.join(models)})…", flush=True)
+    run = run_lab(bars_list, market, vs, costs, models=models, split=split, progress=lambda m: print(m, flush=True))
+    summary = summarize(run)
+    demo = bool(store.read_meta(market, source_interval).get("demo", mode == "offline_demo"))
+    print()
+    print(render(summary, demo))
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    out = save(summary, store.root / "reports" / f"{stamp}-{market}-{interval}", demo)
+    print(f"\n보고서: {out / 'report.md'} (거래 내역 trades.csv, 요약 summary.json) · {time.time() - started:.0f}초")
+    return 0
+
+
 # ---------------------------------------------------------------------- 파서
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="aifund", description="빅터홍컴퍼니 AI 투자회사")
@@ -780,6 +920,33 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--days", type=int, default=60)
     sp.add_argument("--split", help="개발/평가 구간 경계 YYYY-MM-DD")
     sp.add_argument("--fetch", action="store_true")
+    sp = add("lab", cmd_lab, "전략 연구소: 진입 패턴 × 청산 방식 변형을 과거 데이터로 검증(운용과 분리)")
+    labsub = sp.add_subparsers(dest="lab_cmd", required=True)
+    markets = ["kr_stock", "us_stock", "crypto"]
+    x = labsub.add_parser("judge", help="두 시장 보고서를 사전 등록 기준으로 함께 판정")
+    x.add_argument("report_a", help="보고서 폴더(summary.json이 있는 곳)")
+    x.add_argument("report_b")
+    x.add_argument("--top", type=int, default=15)
+    x = labsub.add_parser("catalog", help="변형 목록과 규칙")
+    x.add_argument("--market", choices=markets)
+    x = labsub.add_parser("fetch", help="과거 캔들 수집(조회 전용)")
+    x.add_argument("--market", choices=markets, default="kr_stock")
+    x.add_argument("--candle", help="코인: 1d/240m/60m…(기본 240m), 주식: 1d")
+    x.add_argument("--days", type=int, help="수집 기간(달력 일수, 기본 주식 3650·코인 1095)")
+    x.add_argument("--top", type=int, help="기본 종목 중 앞에서 N개(코인은 거래대금 상위 N, 기본 30)")
+    x.add_argument("--symbols", help="쉼표로 구분한 종목(기본 목록 대신)")
+    x = labsub.add_parser("run", help="저장된 데이터로 변형 전체 시험·보고서 저장")
+    x.add_argument("--market", choices=markets, default="kr_stock")
+    x.add_argument("--candle", help="1d(기본·주식)·1w(저장된 일봉을 주봉으로)·240m 등")
+    x.add_argument("--families", help="계열만 골라 시험(쉼표: pattern,trend,rotation)")
+    x.add_argument("--interpretations", help="책 패턴 해석(쉼표: v1,loose,strict,regime — docs/lab-preregistration.md)")
+    x.add_argument("--symbols")
+    x.add_argument("--since", help="이 날짜(YYYY-MM-DD) 이후 데이터만")
+    x.add_argument("--split", help="개발/평가 구간 경계 YYYY-MM-DD(기본: 기간의 70% 지점)")
+    x.add_argument("--model", choices=["both", "bar_close", "intrabar"], default="both",
+                   help="체결 가정: 현 시스템 방식(bar_close)·책 방식(intrabar)")
+    x.add_argument("--entries", help="진입 패턴만 골라 시험(쉼표, `aifund lab catalog` 참고)")
+    x.add_argument("--exits", help="청산 방식만 골라 시험(쉼표)")
     sp = add("candidates", cmd_candidates, "전략 개선 후보")
     csub = sp.add_subparsers(dest="cand_cmd", required=True)
     csub.add_parser("list")

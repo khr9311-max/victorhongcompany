@@ -1,0 +1,107 @@
+{# AI 직원 보고서 조각. 역할마다 출력 스키마가 달라 역할별로 그린다(ai/schemas.py). #}
+{% import "_ui.html" as ui %}
+
+{% macro srcs(ids) -%}
+{% if ids %} <span class="muted">[{{ ids|join(', ') }}]</span>{% endif %}
+{%- endmacro %}
+
+{% macro valid(r) -%}
+{% if r.valid %}{{ ui.st('good', '검증 통과') }}{% else %}{{ ui.st('critical', '검증 실패(사용 안 함)') }}{% endif %}
+{%- endmacro %}
+
+{% macro instrument_views(views) %}
+{% if views %}
+<div class="tbl-wrap"><table><tr><th>종목</th><th>입장</th><th>요약</th><th>주장(근거)</th><th>자료 공백</th></tr>
+{% for v in views %}<tr><td class="nowrap">{{ v.instrument_id }}</td><td>{{ ui.stance(v.stance) }}</td><td class="small">{{ v.summary }}</td>
+  <td class="small">{% for c in v.claims %}{{ c.text }}{{ srcs(c.source_ids) }}<br>{% endfor %}</td><td class="small">{{ v.data_gaps|join(', ') }}</td></tr>{% endfor %}
+</table></div>
+{% endif %}
+{% endmacro %}
+
+{% macro research(r) %}
+{% set rep = r.report %}
+{% if rep.market_summary %}<p class="quote">{{ rep.market_summary }}</p><p class="small">{{ ui.st('warning', '자료 상태') }} {{ rep.data_status }}</p>{% endif %}
+{% if r.data_status %}<p class="small muted">번들 상태: {{ r.data_status|join(' · ') }}</p>{% endif %}
+{{ instrument_views(rep.instrument_views) }}
+{% if rep.strategy_conditions %}<p class="small" style="margin-top:8px">전략 적합도: {% for c in rep.strategy_conditions %}<span class="badge" title="{{ c.reason }}">{{ c.strategy_id|label('ai') }} {{ c.regime_fit|label('ai') }}</span> {% endfor %}</p>{% endif %}
+{% if rep.proposals %}
+<h3 class="small" style="margin-top:12px">제안</h3>
+<div class="tbl-wrap"><table><tr><th>ID</th><th>종목</th><th>방향</th><th class="n">AI 슬리브 비중</th><th>근거</th><th>반론</th><th>무효화 조건</th><th>기간</th><th>비용 고려</th></tr>
+{% for p in rep.proposals %}<tr><td>{{ p.proposal_ref }}</td><td class="nowrap">{{ p.instrument_id }}</td><td>{{ ui.action(p.action) }}</td><td class="n">{{ p.target_weight }}</td>
+  <td class="small">{{ p.rationale }}{{ srcs(p.source_ids) }}</td><td class="small">{{ p.counterarguments|join(' / ') }}</td>
+  <td class="small">{{ p.invalidation }}</td><td class="nowrap">{{ p.horizon_hours }}h</td><td class="small">{{ p.cost_considered }}</td></tr>{% endfor %}
+</table></div>
+{% else %}<p class="small muted" style="margin-top:8px">제안 없음(관망·현금 유지)</p>{% endif %}
+{% if rep.improvement_ideas %}<p class="small">개선 후보: {% for i in rep.improvement_ideas %}<span class="badge">{{ i.strategy_id }} {{ i.changes }}</span>{% endfor %} → <a href="/settings">설정 화면</a>에서 실험·승격</p>{% endif %}
+{% if r.sources %}<details style="margin-top:8px"><summary class="small">원자료 {{ r.sources|length }}건(출처·발표·수집 시각)</summary>
+  <div class="tbl-wrap"><table class="small"><tr><th>ID</th><th>제목</th><th>발표</th><th>수집</th></tr>
+  {% for s in r.sources %}<tr><td class="small">{{ s.id }}</td><td>{% if s.url %}<a href="{{ s.url }}" rel="noopener noreferrer" target="_blank">{{ s.title }}</a>{% else %}{{ s.title }}{% endif %}</td><td class="nowrap">{{ s.published_at|kst }}</td><td class="nowrap">{{ s.fetched_at|kst }}</td></tr>{% endfor %}
+  </table></div></details>{% endif %}
+{% endmacro %}
+
+{% macro news(rep) %}
+<p class="quote">{{ rep.summary }}</p>
+<div class="tbl-wrap"><table><tr><th>사건</th><th>종목</th><th>분류</th><th>방향</th><th>중요도</th><th>확인 수준</th><th>주의점</th></tr>
+{% for e in rep.events %}<tr><td class="small">{{ e.headline }}{{ srcs(e.source_ids) }}</td><td class="small nowrap">{{ e.instrument_ids|join(', ') or '시장 전반' }}</td>
+  <td class="nowrap">{{ e.category|label('ai') }}</td><td class="nowrap">{{ e.direction|label('ai') }}</td><td class="nowrap">{{ e.materiality|label('ai') }}</td>
+  <td class="nowrap small">{{ e.verification|label('ai') }}</td><td class="small">{{ e.note }}</td></tr>
+{% else %}<tr><td colspan="7" class="empty">정리할 사건 없음</td></tr>{% endfor %}
+</table></div>
+{% if rep.coverage_gaps %}<p class="small muted">자료 공백: {{ rep.coverage_gaps|join(' · ') }}</p>{% endif %}
+{% endmacro %}
+
+{% macro quant(rep) %}
+<p class="quote">{{ rep.summary }}</p>
+<div class="tbl-wrap"><table><tr><th>종목</th><th>국면</th><th>변동성</th><th>유동성</th><th>해석(근거)</th></tr>
+{% for x in rep.instruments %}<tr><td class="nowrap">{{ x.instrument_id }}</td><td class="nowrap">{{ x.regime|label('ai') }}</td><td class="nowrap">{{ x.volatility|label('ai') }}</td>
+  <td class="nowrap">{{ x.liquidity|label('ai') }}</td><td class="small">{{ x.reading }}{{ srcs(x.source_ids) }}</td></tr>{% endfor %}
+</table></div>
+{% if rep.strategy_conditions %}<p class="small" style="margin-top:8px">{% for c in rep.strategy_conditions %}<span class="badge">{{ c.strategy_id|label('ai') }} {{ c.regime_fit|label('ai') }}</span> {{ c.reason }}{{ srcs(c.source_ids) }}<br>{% endfor %}</p>{% endif %}
+{% if rep.cost_notes %}<p class="small">비용: {{ rep.cost_notes }}</p>{% endif %}
+{% if rep.data_gaps %}<p class="small muted">자료 공백: {{ rep.data_gaps|join(' · ') }}</p>{% endif %}
+{% endmacro %}
+
+{% macro independent(rep) %}
+<p class="quote">{{ rep.summary }}</p>
+{{ instrument_views(rep.instrument_views) }}
+{% if rep.key_risks %}<p class="small" style="margin-top:8px">핵심 위험:</p><ul class="claims small">{% for c in rep.key_risks %}<li>{{ c.text }}{{ srcs(c.source_ids) }}</li>{% endfor %}</ul>{% endif %}
+{% endmacro %}
+
+{% macro review(rep) %}
+<p class="quote">{{ rep.summary }}</p>
+{% if rep.proposal_reviews %}
+<div class="tbl-wrap"><table><tr><th>제안</th><th>판정</th><th>반론(분류: 내용 [근거])</th></tr>
+{% for p in rep.proposal_reviews %}<tr><td>{{ p.proposal_ref }}</td><td>{% if p.verdict == 'accept' %}{{ ui.st('good', '채택 가능') }}{% else %}{{ ui.st('critical', '거절') }}{% endif %}</td>
+  <td class="small">{% for o in p.objections %}{{ o.category|label('ai') }}: {{ o.detail }}{{ srcs(o.source_ids) }}<br>{% else %}없음{% endfor %}</td></tr>{% endfor %}
+</table></div>{% endif %}
+{% if rep.stance_checks %}<p class="small" style="margin-top:8px">입장 검토: {% for s in rep.stance_checks %}<span class="badge" title="{{ s.reason }}">{{ s.instrument_id }} {{ s.agreement|label('ai') }}</span> {% endfor %}</p>{% endif %}
+{% if rep.general_objections %}<ul class="claims small">{% for o in rep.general_objections %}<li>{{ o.category|label('ai') }}: {{ o.detail }}{{ srcs(o.source_ids) }}</li>{% endfor %}</ul>{% endif %}
+{% endmacro %}
+
+{% macro risk(rep) %}
+<p class="quote">{{ rep.summary }}</p>
+<div class="tbl-wrap"><table><tr><th>제안</th><th>판정</th><th class="n">허용 최대 비중</th><th>사유(분류: 내용 [근거])</th></tr>
+{% for v in rep.verdicts %}<tr><td>{{ v.proposal_ref }}</td>
+  <td>{% if v.verdict == 'approve' %}{{ ui.st('good', '승인') }}{% elif v.verdict == 'cap' %}{{ ui.st('warning', '비중 축소') }}{% else %}{{ ui.st('critical', '거절') }}{% endif %}</td>
+  <td class="n">{{ v.max_weight if v.verdict == 'cap' else '-' }}</td>
+  <td class="small">{% for p in v.reasons %}{{ p.category|label('ai') }}: {{ p.detail }}{{ srcs(p.source_ids) }}<br>{% else %}없음{% endfor %}</td></tr>{% endfor %}
+</table></div>
+{% if rep.portfolio_concerns %}<p class="small" style="margin-top:8px">회사 전체 우려:</p><ul class="claims small">{% for p in rep.portfolio_concerns %}<li>{{ p.category|label('ai') }}: {{ p.detail }}{{ srcs(p.source_ids) }}</li>{% endfor %}</ul>{% endif %}
+{% endmacro %}
+
+{% macro weekly(rep) %}
+<p class="quote">{{ rep.summary }}</p>
+<p class="small">자료 충분성: {{ rep.data_sufficiency }}</p>
+{% if rep.improvement_ideas %}<p class="small">개선 후보: {% for i in rep.improvement_ideas %}<span class="badge">{{ i.strategy_id }} {{ i.changes }}</span>{% endfor %} → <a href="/settings">설정 화면</a>에서 실험·승격</p>{% endif %}
+{% endmacro %}
+
+{% macro body(r) %}
+{% if r.errors %}<p class="bad small">{{ r.errors|join(' / ') }}</p>{% endif %}
+{% if r.role == 'research' %}{{ research(r) }}
+{% elif r.role == 'news_analyst' %}{{ news(r.report) }}
+{% elif r.role == 'quant_analyst' %}{{ quant(r.report) }}
+{% elif r.role == 'review_independent' %}{{ independent(r.report) }}
+{% elif r.role == 'review' %}{{ review(r.report) }}
+{% elif r.role == 'risk_manager' %}{{ risk(r.report) }}
+{% elif r.role == 'strategy_review' %}{{ weekly(r.report) }}{% endif %}
+{% endmacro %}

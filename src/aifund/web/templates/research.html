@@ -1,15 +1,35 @@
 {% extends "base.html" %}
 {% import "_ui.html" as ui %}
+{% import "_reports.html" as rp %}
 {% block title %}연구·검증{% endblock %}
 {% block content %}
 <div class="page-head">
   <div class="grow">
     <h1>연구·검증</h1>
-    <p class="sub">연구 AI가 시세·전략 신호·뉴스를 요약하고 제안하면, 검증 AI가 먼저 독립 평가한 뒤 반론을 냅니다. AI는 주문·쉘·설정 변경 권한이 없습니다.</p>
+    <p class="sub">AI 직원 {{ d.team|length }}명이 정해진 순서로 한 번씩 일합니다. 모두 제안·의견만 내며 주문·쉘·설정 변경 권한이 없습니다.</p>
   </div>
 </div>
 
-<div class="grid g2">
+<div class="section-title" style="margin-top:0"><h2>AI 직원</h2><span class="small muted">{% if d.demo_ai %}데모 모드: 실제 AI 대신 가짜 응답(비용 0) · 같은 모델을{% else %}같은 모델({{ d.model }})을{% endif %} 직원마다 다른 지시·입력·출력 형식으로 따로 부르고 기록도 따로 남깁니다 · 이번 달 = KST 기준</span></div>
+<p class="flow"><span class="badge strong">뉴스·공시 애널리스트</span><span class="arrow" aria-hidden="true">+</span><span class="badge strong">퀀트 애널리스트</span><span class="arrow" aria-hidden="true">→</span>
+  <span class="badge strong">수석 연구원</span><span class="arrow" aria-hidden="true">→</span><span class="badge strong">검증 AI</span><span class="arrow" aria-hidden="true">→</span>
+  <span class="badge strong">리스크 매니저</span><span class="small muted">· 앞 단계가 검증을 통과해야 다음 단계 진행 · 전략 연구원은 주 1회 따로</span></p>
+<div class="grid team-grid" style="margin-top:10px">
+{% for m in d.team %}
+  <section class="card member">
+    <div class="row-gap"><h2>{{ m.title }}</h2><span class="badge">{{ m.team }}</span><span class="spacer"></span>
+      {% if m.on %}{{ ui.st('good', '근무 중') }}{% else %}{{ ui.st('neutral', '쉬는 중(설정에서 꺼짐)' if m.toggle else '쉬는 중(AI 꺼짐)') }}{% endif %}</div>
+    <p class="small">{{ m.duty }}</p>
+    <dl class="kv"><dt>보는 자료</dt><dd>{{ m.inputs }}</dd><dt>결정 영향</dt><dd>{{ m.authority }}</dd></dl>
+    <div class="foot-line">
+      {% if m.last %}최근 {{ m.last.started_at|ago }} · {{ m.last.status|label('run') }}{% if m.last.market %} · {{ m.last.market|label('market') }}{% endif %}{% else %}아직 근무 기록 없음{% endif %}
+      <span class="cell-sub">이번 달 {{ m.runs }}회(성공 {{ m.ok }}) · {{ m.cost|krw }}</span>
+    </div>
+  </section>
+{% endfor %}
+</div>
+
+<div class="grid g2" style="margin-top:14px">
   <section class="card">
     <div class="card-head"><h2 class="grow">AI 상태</h2>{{ ui.yesno(d.availability[0], d.availability[1], d.availability[1]) }}</div>
     {% if d.demo_ai %}<p class="small">{{ ui.st('warning', '데모 모드') }} 실제 AI 대신 가짜 응답을 씁니다(비용 0). 아래 공급자·모델은 설정값입니다.</p>{% endif %}
@@ -32,7 +52,7 @@
   </section>
   <section class="card">
     <h2>정기 연구 일정</h2>
-    <p class="sub">직전 봉이 크게 움직이면 시장별 하루 최대 {{ d.max_event_calls }}회 추가 연구 · 연구 뒤 검증 AI가 이어서 실행</p>
+    <p class="sub">직전 봉이 크게 움직이면 시장별 하루 최대 {{ d.max_event_calls }}회 추가 연구 · 연구 1회 = 연구팀 → 검증팀 전체 흐름</p>
     <div class="tbl-wrap" style="margin-top:8px"><table><tr><th>시장</th><th>정기 연구</th><th>최근 연구</th><th class="n">오늘 급변 연구</th></tr>
     {% for s in d.schedule %}<tr><td>{{ ui.market(s.market, s.slot) }}</td><td>{{ s.rule }}</td>
       <td>{% if s.last %}{{ s.last|ago }} {% if s.last_valid %}{{ ui.st('good', '검증 통과') }}{% else %}{{ ui.st('warning', '검증 실패') }}{% endif %}<span class="cell-sub">{{ s.last|kst }}</span>{% else %}<span class="muted">아직 없음</span>{% endif %}</td>
@@ -53,47 +73,36 @@
   </table></div>
 </section>
 
-<div class="section-title"><h2>AI 보고서</h2><span class="small muted">최근 12건 · 최근 3건만 펼침(제목을 누르면 열림) · 검증 실패한 보고서의 제안은 보류됩니다</span></div>
-{% for r in d.reports %}
-<details class="card report" {% if loop.index <= 3 %}open{% endif %}>
+<div class="section-title"><h2>연구 세트</h2><span class="small muted">최근 {{ d.sets|length }}건 · 수석 연구원 보고서 아래에 같은 연구의 애널리스트 메모·검증·리스크 판정을 묶었습니다 · 최근 2건만 펼침 · 검증 실패한 보고서는 쓰지 않습니다</span></div>
+{% for s in d.sets %}{% set r = s.lead %}
+<details class="card report" {% if loop.index <= 2 %}open{% endif %}>
   <summary>
-    <h2>{{ {'research':'연구 AI 보고서','review':'검증 AI 반론','review_independent':'검증 AI 독립 평가','strategy_review':'주간 전략 검토'}.get(r.role, r.role) }}</h2>
+    <h2>{{ r.role|label('role') }} 보고서</h2>
     {% if r.market and r.market != 'all' %}{{ ui.market(r.market) }}{% endif %}
     <span class="small muted">{{ r.created_at|kst }} · {{ r.created_at|ago }}</span><span class="spacer"></span>
-    {% if r.valid %}{{ ui.st('good', '검증 통과') }}{% else %}{{ ui.st('critical', '검증 실패(제안 보류)') }}{% endif %}
+    {% for c in s.children %}<span class="badge">{{ c.role|label('role') }} {{ '✓' if c.valid else '✕' }}</span>{% endfor %}
+    {{ rp.valid(r) }}
   </summary>
-  {% if r.errors %}<p class="bad small">{{ r.errors|join(' / ') }}</p>{% endif %}
-  <p class="small muted">스냅샷 {{ r.snapshot_id or '-' }} · 만료 {{ r.expires_at|kst }} · 상위 {{ r.parent_report_id or '-' }}</p>
-  {% set rep = r.report %}
-  {% if rep.market_summary %}<p class="quote">{{ rep.market_summary }}</p><p class="small">{{ ui.st('warning', '자료 상태') }} {{ rep.data_status }}</p>{% endif %}
-  {% if rep.summary %}<p class="quote">{{ rep.summary }}</p>{% endif %}
-  {% if r.data_status %}<p class="small muted">번들 상태: {{ r.data_status|join(' · ') }}</p>{% endif %}
-  {% if rep.instrument_views %}
-  <div class="tbl-wrap"><table><tr><th>종목</th><th>입장</th><th>요약</th><th>주장(근거)</th><th>자료 공백</th></tr>
-  {% for v in rep.instrument_views %}<tr><td class="nowrap">{{ v.instrument_id }}</td><td>{{ ui.stance(v.stance) }}</td><td class="small">{{ v.summary }}</td>
-    <td class="small">{% for c in v.claims %}{{ c.text }} <span class="muted">[{{ c.source_ids|join(', ') }}]</span><br>{% endfor %}</td><td class="small">{{ v.data_gaps|join(', ') }}</td></tr>{% endfor %}
-  </table></div>{% endif %}
-  {% if rep.proposals %}
-  <h3 class="small" style="margin-top:12px">제안</h3>
-  <div class="tbl-wrap"><table><tr><th>ID</th><th>종목</th><th>방향</th><th class="n">AI 슬리브 비중</th><th>근거</th><th>반론</th><th>무효화 조건</th><th>기간</th><th>비용 고려</th></tr>
-  {% for p in rep.proposals %}<tr><td>{{ p.proposal_ref }}</td><td class="nowrap">{{ p.instrument_id }}</td><td>{{ ui.action(p.action) }}</td><td class="n">{{ p.target_weight }}</td>
-    <td class="small">{{ p.rationale }} <span class="muted">[{{ p.source_ids|join(', ') }}]</span></td><td class="small">{{ p.counterarguments|join(' / ') }}</td>
-    <td class="small">{{ p.invalidation }}</td><td class="nowrap">{{ p.horizon_hours }}h</td><td class="small">{{ p.cost_considered }}</td></tr>{% endfor %}
-  </table></div>{% endif %}
-  {% if rep.proposal_reviews %}
-  <h3 class="small" style="margin-top:12px">제안별 검증</h3>
-  <div class="tbl-wrap"><table><tr><th>제안</th><th>판정</th><th>반론(분류: 내용 [근거])</th></tr>
-  {% for p in rep.proposal_reviews %}<tr><td>{{ p.proposal_ref }}</td><td>{% if p.verdict == 'accept' %}{{ ui.st('good', '채택 가능') }}{% else %}{{ ui.st('critical', '거절') }}{% endif %}</td>
-    <td class="small">{% for o in p.objections %}{{ o.category }}: {{ o.detail }} <span class="muted">[{{ o.source_ids|join(', ') }}]</span><br>{% else %}없음{% endfor %}</td></tr>{% endfor %}
-  </table></div>{% endif %}
-  {% if rep.stance_checks %}<p class="small" style="margin-top:8px">입장 검토: {% for s in rep.stance_checks %}<span class="badge">{{ s.instrument_id }} {{ s.agreement }}</span>{% endfor %}</p>{% endif %}
-  {% if rep.improvement_ideas %}<p class="small">개선 후보: {% for i in rep.improvement_ideas %}<span class="badge">{{ i.strategy_id }} {{ i.changes }}</span>{% endfor %} → <a href="/settings">설정 화면</a>에서 실험·승격</p>{% endif %}
-  {% if r.sources %}<details style="margin-top:8px"><summary class="small">원자료 {{ r.sources|length }}건(출처·발표·수집 시각)</summary>
-    <div class="tbl-wrap"><table class="small"><tr><th>ID</th><th>제목</th><th>발표</th><th>수집</th></tr>
-    {% for s in r.sources %}<tr><td class="small">{{ s.id }}</td><td>{% if s.url %}<a href="{{ s.url }}" rel="noopener noreferrer" target="_blank">{{ s.title }}</a>{% else %}{{ s.title }}{% endif %}</td><td class="nowrap">{{ s.published_at|kst }}</td><td class="nowrap">{{ s.fetched_at|kst }}</td></tr>{% endfor %}
-    </table></div></details>{% endif %}
+  <p class="small muted">스냅샷 {{ r.snapshot_id or '-' }} · 만료 {{ r.expires_at|kst }}</p>
+  {{ rp.body(r) }}
+  {% for c in s.children %}
+  <details class="sub-report">
+    <summary><h3>{{ c.role|label('role') }}</h3><span class="small muted">{{ c.created_at|kst }}</span><span class="spacer"></span>{{ rp.valid(c) }}</summary>
+    {{ rp.body(c) }}
+  </details>
+  {% endfor %}
 </details>
 {% else %}<div class="card muted-card muted">AI 보고서가 아직 없습니다. 사유는 아래 실행 기록을 확인하세요.</div>{% endfor %}
+
+{% if d.weekly %}
+<div class="section-title"><h2>전략 연구원(주간 검토)</h2><span class="small muted">개선 후보는 사람이 실험·승격합니다</span></div>
+{% for r in d.weekly %}
+<details class="card report" {% if loop.first %}open{% endif %}>
+  <summary><h2>주간 전략 검토</h2><span class="small muted">{{ r.created_at|kst }} · {{ r.created_at|ago }}</span><span class="spacer"></span>{{ rp.valid(r) }}</summary>
+  {{ rp.body(r) }}
+</details>
+{% endfor %}
+{% endif %}
 
 <section class="card">
   <h2>최종 채택·거절(운용 장부 제안 기록)</h2>

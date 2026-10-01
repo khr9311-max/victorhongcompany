@@ -329,6 +329,10 @@ FORM_FIELDS: dict[str, str] = {
     "ai.when_unavailable": "ai.when_unavailable",
     "ai.veto_rule_buys": "ai.veto_rule_buys",
     "ai.independent_review_pass": "ai.independent_review_pass",
+    "ai.news_analyst_enabled": "ai.news_analyst_enabled",
+    "ai.quant_analyst_enabled": "ai.quant_analyst_enabled",
+    "ai.risk_manager_enabled": "ai.risk_manager_enabled",
+    "ai.analyst_effort": "ai.analyst_effort",
     "schedule.quote_poll_sec": "schedule.quote_poll_sec",
     "schedule.order_poll_sec": "schedule.order_poll_sec",
     "news.naver_enabled": "news.naver_enabled",
@@ -379,7 +383,7 @@ def apply_form(current: Settings, form: dict[str, str]) -> Settings:
                 data["news"]["naver_queries"].pop(market, None)
     if "ai.research_focus" in form:  # 비워서 저장하면 관심사 지시를 없앤다
         data["ai"]["research_focus"] = form["ai.research_focus"].strip()
-    for sid in ("trend_sma", "mean_reversion", "ai_research"):
+    for sid in list(data["strategies"]["sleeves"]):  # 화면에 보인 기본 슬리브(연구소 전략 포함)
         if form.get(f"sleeve.{sid}"):
             data["strategies"]["sleeves"][sid] = form[f"sleeve.{sid}"]
     for sid, keys in (("trend_sma", ("fast", "slow")), ("mean_reversion", ("bb_period", "bb_k", "rsi_entry", "rsi_exit", "stop_loss_pct", "max_hold_bars"))):

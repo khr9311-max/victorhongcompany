@@ -5,13 +5,14 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import Any
 
+from aifund.ai.team import ROSTER
 from aifund.brokers.upbit import UpbitMarketData
 from aifund.config.settings import scope_hash
 from aifund.control.actions import preview_liquidation
 from aifund.control.live import confirm_phrase
 from aifund.core.money import D, ZERO
 from aifund.core.paths import MODE_LABELS
-from aifund.core.timeutil import parse_iso
+from aifund.core.timeutil import KST, kst_midnight_utc, parse_iso, to_iso
 from aifund.db.database import loads
 from aifund.evaluation.metrics import book_metrics, comparison
 from aifund.ledger.valuation import value_book
@@ -49,9 +50,12 @@ def market_rows(ctx: AppContext, runtime: Any) -> list[dict[str, Any]]:
             if minimum is None:
                 order_units.append(f"{symbol}: 환율 수집 필요")
             else:
-                sleeve = max(ctx.settings.strategies.sleeves.values(), default=ZERO) * ms.allocation_krw
+                sleeves = ctx.settings.strategies.sleeves_for(market)
+                sleeve = max(sleeves.values(), default=ZERO) * ms.allocation_krw
                 reason = " · 전략별 배정액 부족" if minimum > sleeve else ""
-                rule_budget = max((ctx.settings.strategies.sleeves.get(sid, ZERO) for sid in ("trend_sma", "mean_reversion")),
+                rule_ids = ["trend_sma", "mean_reversion"] + [f"lab:{vid}" for vid, tg in ctx.settings.strategies.lab.items()
+                                                              if tg.enabled and market in tg.markets]
+                rule_budget = max((sleeves.get(sid, ZERO) for sid in rule_ids),
                                   default=ZERO) * ms.allocation_krw / max(1, len(ms.instruments))
                 if minimum > rule_budget:
                     reason += " · 규칙전략 종목별 배정액 부족"
@@ -195,30 +199,76 @@ def strategies_page(ctx: AppContext) -> dict[str, Any]:
                               "opened_at": p.opened_at})
     from aifund.strategies import mean_reversion, trend  # noqa: F401
     from aifund.strategies.base import REGISTRY
+    from aifund.strategies.lab import lab_class
+
+    st = ctx.settings.strategies
+
+    def sleeve_text(sid: str, markets: list[str] | None = None) -> str:
+        """시장별 슬리브가 있으면 시장마다 보여 준다."""
+        if not st.market_sleeves:
+            return str(st.sleeves.get(sid, ZERO))
+        ms = markets or ctx.settings.enabled_markets()
+        return " · ".join(f"{MARKET_LABELS.get(m, m)} {st.sleeves_for(m).get(sid, ZERO)}" for m in ms)
 
     strategies = [{"id": sid, "title": cls.title, "hypothesis": cls.hypothesis, "version": cls.version,
-                   "enabled": getattr(ctx.settings.strategies, sid).enabled,
-                   "params": getattr(ctx.settings.strategies, sid).params, "sleeve": ctx.settings.strategies.sleeves.get(sid)}
+                   "enabled": getattr(st, sid).enabled, "params": getattr(st, sid).params, "sleeve": sleeve_text(sid)}
                   for sid, cls in REGISTRY.items()]
+    for vid, tg in st.lab.items():  # 전략 연구소 변형(검증 결과는 docs/strategy-lab.md)
+        lab = lab_class(vid)
+        strategies.append({"id": lab.strategy_id, "title": lab.title, "hypothesis": lab.hypothesis, "version": lab.version,
+                           "enabled": tg.enabled, "params": {"시장": ", ".join(MARKET_LABELS.get(m, m) for m in tg.markets)},
+                           "sleeve": sleeve_text(lab.strategy_id, list(tg.markets))})
     signals = [dict(r) for r in ctx.db.query(
         "SELECT * FROM signals WHERE cycle_id=(SELECT cycle_id FROM signals ORDER BY id DESC LIMIT 1) ORDER BY strategy_id, instrument_id")]
     return {"comparison": comp, "operating": op, "positions": positions, "strategies": strategies, "signals": signals,
-            "sleeves": ctx.settings.strategies.sleeves, "compare_chart": charts.compare_chart(ctx),
+            "sleeves": ctx.settings.strategies.sleeves, "ai_sleeve": sleeve_text("ai_research"),
+            "compare_chart": charts.compare_chart(ctx),
             "operating_setting": ctx.settings.operating_setting}
 
 
+def _report_row(r: Any) -> dict[str, Any]:
+    d = dict(r)
+    data = loads(r["report_json"], {})
+    d["report"] = data.get("report", {})
+    bundle = data.get("bundle") or {}
+    d["sources"] = bundle.get("sources_UNTRUSTED_DATA", []) if isinstance(bundle, dict) else []
+    d["data_status"] = bundle.get("data_status", []) if isinstance(bundle, dict) else []
+    d["errors"] = loads(r["validation_errors"], [])
+    return d
+
+
+# 연구 세트 안에서 보여 줄 순서(일하는 순서)
+_SET_ORDER = {"news_analyst": 0, "quant_analyst": 1, "review_independent": 2, "review": 3, "risk_manager": 4}
+
+
+def team_roster(ctx: AppContext) -> list[dict[str, Any]]:
+    """AI 직원 명부 + 이번 달(KST) 근무 기록. 비용은 실행 기록(ai_runs)의 정산액 합계."""
+    s = ctx.settings.ai
+    now_k = ctx.clock.now().astimezone(KST)
+    month_start = to_iso(kst_midnight_utc(now_k.date().replace(day=1)))
+    ai_on = s.enabled and s.provider != "disabled"
+    out = []
+    for e in ROSTER:
+        marks = ",".join("?" for _ in e.roles)
+        runs = ctx.db.query(f"SELECT status, cost_krw FROM ai_runs WHERE role IN ({marks}) AND started_at>=?", (*e.roles, month_start))
+        last = ctx.db.query_one(f"SELECT status, started_at, market FROM ai_runs WHERE role IN ({marks}) ORDER BY started_at DESC LIMIT 1",
+                                e.roles)
+        out.append({"key": e.key, "title": e.title, "team": e.team, "duty": e.duty, "inputs": e.inputs, "authority": e.authority,
+                    "on": ai_on and (getattr(s, e.toggle) if e.toggle else True), "toggle": e.toggle,
+                    "runs": len(runs), "ok": sum(1 for r in runs if r["status"] == "ok"),
+                    "cost": sum((D(r["cost_krw"]) for r in runs if r["cost_krw"]), ZERO),
+                    "last": dict(last) if last else None})
+    return out
+
+
 def research_page(ctx: AppContext) -> dict[str, Any]:
-    runs = [dict(r) for r in ctx.db.query("SELECT * FROM ai_runs ORDER BY started_at DESC LIMIT 30")]
-    reports = []
-    for r in ctx.db.query("SELECT * FROM ai_reports ORDER BY created_at DESC LIMIT 12"):
-        d = dict(r)
-        data = loads(r["report_json"], {})
-        d["report"] = data.get("report", {})
-        bundle = data.get("bundle") or {}
-        d["sources"] = bundle.get("sources_UNTRUSTED_DATA", []) if isinstance(bundle, dict) else []
-        d["data_status"] = bundle.get("data_status", []) if isinstance(bundle, dict) else []
-        d["errors"] = loads(r["validation_errors"], [])
-        reports.append(d)
+    runs = [dict(r) for r in ctx.db.query("SELECT * FROM ai_runs ORDER BY started_at DESC LIMIT 40")]
+    sets = []
+    for r in ctx.db.query("SELECT * FROM ai_reports WHERE role='research' ORDER BY created_at DESC LIMIT 8"):
+        children = [_report_row(c) for c in ctx.db.query("SELECT * FROM ai_reports WHERE parent_report_id=? ORDER BY created_at",
+                                                        (r["report_id"],))]
+        sets.append({"lead": _report_row(r), "children": sorted(children, key=lambda c: _SET_ORDER.get(c["role"], 9))})
+    weekly = [_report_row(r) for r in ctx.db.query("SELECT * FROM ai_reports WHERE role='strategy_review' ORDER BY created_at DESC LIMIT 2")]
     proposals = [dict(r) for r in ctx.db.query(
         "SELECT * FROM proposals WHERE book_id=? AND (action NOT IN ('wait','hold') OR status='rejected' OR strategy_id='ai_research') "
         "ORDER BY created_at DESC LIMIT 60", (OPERATING,))]
@@ -239,7 +289,8 @@ def research_page(ctx: AppContext) -> dict[str, Any]:
                          "rule": ctx.ai.schedule_text(market), "last": parse_iso(last["created_at"]) if last else None,
                          "last_valid": bool(last["valid"]) if last else None,
                          "events_today": ctx.ai.event_calls_today(market)})
-    return {"runs": runs, "reports": reports, "proposals": proposals, "news": news, "availability": ctx.ai.availability(),
+    return {"runs": runs, "sets": sets, "weekly": weekly, "team": team_roster(ctx), "proposals": proposals, "news": news,
+            "availability": ctx.ai.availability(),
             "budget": budget, "provider": ctx.settings.ai.provider, "model": ctx.settings.ai.model,
             "locked": ctx.locked_settings, "pricing": pricing,
             "rates_now": pricing.rates(ctx.clock.now()) if pricing else None,

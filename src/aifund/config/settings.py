@@ -77,6 +77,9 @@ class MarketSettings(_Strict):
     allocation_krw: Decimal = Field(Decimal("0"), ge=0)
     decision_delay_sec: int = 20  # 봉 마감 후 대기(거래소 반영 지연 흡수)
     stock_decision_after_open_min: int = 10
+    # 판단에 쓰는 완성봉 수. 비우면 400봉(종전 그대로). 정하면 처음 한 번 그만큼 과거 캔들을 받아 채운다
+    # (연구소 52주 신고가·상대강도 전략은 일봉 1년 이상이 필요 → 600 권장)
+    history_bars: int | None = Field(None, ge=100, le=3000)
 
     @field_validator("candle")
     @classmethod
@@ -119,23 +122,45 @@ class StrategyToggle(_Strict):
     params: dict[str, Any] = Field(default_factory=dict)
 
 
+class LabToggle(_Strict):
+    """전략 연구소 변형을 운용 전략으로 켠다(전략 id = 'lab:변형 id'). 자금은 슬리브 'lab:변형 id'로 배정."""
+
+    enabled: bool = True
+    markets: list[MarketName] = Field(default_factory=lambda: ["kr_stock", "us_stock"])
+
+
 class StrategySettings(_Strict):
     trend_sma: StrategyToggle = Field(default_factory=StrategyToggle)
     mean_reversion: StrategyToggle = Field(default_factory=StrategyToggle)
-    # 슬리브: 원금 대비 전략별 배정 비율. ai_research는 A 설정에서는 현금으로 유지된다.
+    # 전략 연구소 변형(키 = `aifund lab catalog`의 변형 id). 기본은 없음. 과거 검증 결과는 docs/strategy-lab.md
+    lab: dict[str, LabToggle] = Field(default_factory=dict)
+    # 슬리브: 시장 배정액 대비 전략별 배정 비율. ai_research는 A 설정에서는 현금으로 유지된다.
     sleeves: dict[str, Decimal] = Field(
         default_factory=lambda: {"trend_sma": Decimal("0.4"), "mean_reversion": Decimal("0.4"), "ai_research": Decimal("0.2")}
     )
+    # 시장별 슬리브(있으면 그 시장은 sleeves 대신 이것을 쓴다). 예: 주식에만 연구소 전략을 켤 때
+    market_sleeves: dict[MarketName, dict[str, Decimal]] = Field(default_factory=dict)
     rebalance_threshold_krw: Decimal = Decimal("10000")
 
     @model_validator(mode="after")
     def _sleeves(self) -> "StrategySettings":
-        total = sum(self.sleeves.values(), Decimal(0))
-        if total > Decimal("1.0000001"):
-            raise ValueError("전략 슬리브 합은 1을 넘을 수 없습니다")
-        if any(v < 0 for v in self.sleeves.values()):
-            raise ValueError("슬리브는 음수일 수 없습니다")
+        for name, sl in [("기본", self.sleeves), *self.market_sleeves.items()]:
+            if sum(sl.values(), Decimal(0)) > Decimal("1.0000001"):
+                raise ValueError(f"전략 슬리브 합은 1을 넘을 수 없습니다({name})")
+            if any(v < 0 for v in sl.values()):
+                raise ValueError(f"슬리브는 음수일 수 없습니다({name})")
+        from aifund.lab.catalog import compatible, find  # 연구소는 설정을 가져오지 않는다(순환 참조 없음)
+
+        for vid, tg in self.lab.items():
+            v = find(vid)
+            if v is None:
+                raise ValueError(f"알 수 없는 연구소 전략 {vid} (aifund lab catalog 참고)")
+            if bad := [m for m in tg.markets if not compatible(v, m)]:
+                raise ValueError(f"연구소 전략 {vid}는 {', '.join(bad)}에 쓸 수 없습니다")
         return self
+
+    def sleeves_for(self, market: str) -> dict[str, Decimal]:
+        return self.market_sleeves.get(market, self.sleeves)  # type: ignore[call-overload]
 
 
 class ModelPricing(_Strict):
@@ -188,6 +213,13 @@ class AISettings(_Strict):
     event_move_pct: Decimal = Decimal("5")
     max_event_calls_per_day: int = Field(1, ge=0, le=24)
     independent_review_pass: bool = True
+    # AI 직원 구성(ai/team.py). 끄면 그 단계 없이 진행한다(애널리스트 없이 수석 연구원이 원자료만 보고 연구 등).
+    news_analyst_enabled: bool = True
+    quant_analyst_enabled: bool = True
+    risk_manager_enabled: bool = True  # C 설정에서 검증 통과한 AI 매수·유지 제안을 회사 전체 보유와 함께 축소·거절
+    # 애널리스트(분류·정리 업무)의 추론 강도. 나머지 직원은 effort. Gemini는 추론 토큰이 출력 한도에 포함되므로
+    # 공식 문서 권고대로 출력 한도를 줄이는 대신 추론 강도를 낮춰 잘림·지연을 막는다.
+    analyst_effort: Literal["low", "medium", "high", "xhigh", "max"] = "medium"
     veto_rule_buys: bool = True
     report_ttl_hours: int = Field(24, ge=1, le=72)
     when_unavailable: Literal["continue_rules", "hold_new_risk"] = "continue_rules"

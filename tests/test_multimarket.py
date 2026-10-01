@@ -30,9 +30,9 @@ def context(home):
 
 def test_paper_profile_and_live_separation(home):
     s = load_settings_file(PROFILE)
-    assert s.risk.principal_cap_krw == 5000000
+    assert s.risk.principal_cap_krw == 38000000
     assert s.enabled_markets() == ["crypto", "kr_stock", "us_stock"]
-    assert sum(m.allocation_krw for m in s.markets.values()) == 5000000
+    assert sum(m.allocation_krw for m in s.markets.values()) == 38000000
     assert s.operating_setting == "C" and s.ai.provider == "gemini"
     assert "반도체" in s.ai.research_focus
     for name in ("paper.toml", "config.toml"):
@@ -55,8 +55,8 @@ def test_fx_is_atomic_bounded_and_not_repeated(home):
     balances = asyncio.run(ex.broker.balances())
     assert balances["USD"].free == ctx.ledger.cash("operating", "USD") == usd
     assert balances["KRW"].free == ctx.ledger.cash("operating", "KRW")
-    assert ctx.ledger.cash("operating") + usd * 1400 == 5000000
-    assert ctx.ledger.principal("operating") == 5000000
+    assert ctx.ledger.cash("operating") + usd * 1400 == 38000000
+    assert ctx.ledger.principal("operating") == 38000000
     restarted = build_context(ctx.paths, clock=ctx.clock, config_path=PROFILE)
     assert fund_us_paper(restarted, "operating", restarted.executor_for("operating", "us_stock")) == 0
     assert restarted.ledger.cash("operating", "USD") == usd
@@ -78,11 +78,11 @@ def test_existing_paper_capital_upgrade_only_once(home):
     old = build_context(paths)
     assert old.ledger.principal("operating") == 300000
     ctx = build_context(paths, config_path=PROFILE)
-    assert ctx.ledger.principal("operating") == ctx.ledger.cash("operating") == 5000000
+    assert ctx.ledger.principal("operating") == ctx.ledger.cash("operating") == 38000000
     balances = asyncio.run(ctx.executor_for("operating", "crypto").broker.balances())
-    assert balances["KRW"].free == 5000000
+    assert balances["KRW"].free == 38000000
     again = build_context(paths, config_path=PROFILE)
-    assert again.ledger.principal("operating") == 5000000
+    assert again.ledger.principal("operating") == 38000000
 
 
 def test_one_market_failure_does_not_block_quotes_or_ai(home):

@@ -58,15 +58,15 @@ def test_merge_conflict_falls_back_to_whole_file(home):
     cfg = _profile_copy(home)
     paths = mode_paths("offline_demo", home)
     ctx = build_context(paths, config_path=cfg)
-    _save_web(ctx, markets={"kr_stock.allocation_krw": "2500000", "us_stock.allocation_krw": "1500000"})
+    _save_web(ctx, markets={"kr_stock.allocation_krw": "26000000", "us_stock.allocation_krw": "11000000"})
     text = cfg.read_text(encoding="utf-8")
     text = text.replace('allocation_krw = "1000000"', 'allocation_krw = "1500000"', 1)  # crypto
-    text = text.replace('allocation_krw = "2000000"        # 미국', 'allocation_krw = "1500000"        # 미국')
+    text = text.replace('allocation_krw = "12000000"       # 미국', 'allocation_krw = "11500000"       # 미국')
     cfg.write_text(text, encoding="utf-8")
 
-    again = build_context(paths, config_path=cfg)  # 합치면 배정 합계 5.5백만 > 원금 → 파일 전체 적용
+    again = build_context(paths, config_path=cfg)  # 합치면 배정 합계 3,900만 > 원금 3,800만 → 파일 전체 적용
     alloc = {m: again.settings.markets[m].allocation_krw for m in ("crypto", "kr_stock", "us_stock")}
-    assert alloc == {"crypto": 1500000, "kr_stock": 2000000, "us_stock": 1500000}
+    assert alloc == {"crypto": 1500000, "kr_stock": 25000000, "us_stock": 11500000}
     assert "합치기 실패" in again.store_settings.history(1)[0]["reason"]
 
 

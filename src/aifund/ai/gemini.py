@@ -33,13 +33,15 @@ class GeminiProvider(LLMProvider):
         self._client = client or httpx.AsyncClient(timeout=timeout)
         self._owns_client = client is None
 
-    async def complete_json(self, system: str, user: str, schema: dict[str, Any], max_tokens: int) -> LLMResult:
+    async def complete_json(self, system: str, user: str, schema: dict[str, Any], max_tokens: int,
+                            effort: str | None = None) -> LLMResult:
         config: dict[str, Any] = {
             "maxOutputTokens": max_tokens,  # 추론 토큰 포함 상한
             "responseMimeType": "application/json", "responseJsonSchema": schema,
         }
-        if self._thinking_level:
-            config["thinkingConfig"] = {"thinkingLevel": self._thinking_level}
+        level = thinking_level_for(self.model, effort) if effort else self._thinking_level
+        if level:
+            config["thinkingConfig"] = {"thinkingLevel": level}
         body = {
             "systemInstruction": {"parts": [{"text": system}]},
             "contents": [{"role": "user", "parts": [{"text": user}]}],

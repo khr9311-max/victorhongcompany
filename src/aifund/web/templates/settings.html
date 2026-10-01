@@ -68,9 +68,9 @@
   </section>
 
   <section class="card">
-    <h2>AI 연구·검증</h2>
-    <p class="sub">공급자·모델은 환경변수로 고정할 수 있습니다{% if d.locked %}(현재 고정: {{ d.locked }}){% endif %}. 공급자를 바꾸면 모델도 그 회사 것으로 바꾸세요.</p>
-    <label class="field" style="margin-top:12px">연구 관심사(연구·검증 AI에 대표 지시로 전달, 1000자 이내 — 매매 권한은 없음)
+    <h2>AI 직원(연구팀·검증팀)</h2>
+    <p class="sub">공급자·모델은 환경변수로 고정할 수 있습니다{% if d.locked %}(현재 고정: {{ d.locked }}){% endif %}. 공급자를 바꾸면 모델도 그 회사 것으로 바꾸세요. 직원은 모두 같은 모델을 씁니다.</p>
+    <label class="field" style="margin-top:12px">연구 관심사(연구팀·검증 AI에 대표 지시로 전달, 1000자 이내 — 매매 권한은 없음)
       <textarea name="ai.research_focus" rows="3" maxlength="1000">{{ s.ai.research_focus }}</textarea></label>
     <div class="fields" style="margin-top:12px">
       <label class="field check"><input type="checkbox" name="ai.enabled" {{ 'checked' if s.ai.enabled }}> AI 사용</label>
@@ -89,6 +89,16 @@
       <label class="field">AI 불가 시<select name="ai.when_unavailable"><option value="continue_rules" {{ 'selected' if s.ai.when_unavailable=='continue_rules' }}>규칙 전략 계속</option><option value="hold_new_risk" {{ 'selected' if s.ai.when_unavailable=='hold_new_risk' }}>신규 위험 보류</option></select></label>
       <label class="field check"><input type="checkbox" name="ai.veto_rule_buys" {{ 'checked' if s.ai.veto_rule_buys }}> AI 반대 시 규칙 매수 보류</label>
       <label class="field check"><input type="checkbox" name="ai.independent_review_pass" {{ 'checked' if s.ai.independent_review_pass }}> 검증 AI 독립 평가 단계</label>
+    </div>
+    <h3 class="small" style="margin-top:14px">추가 직원(끄면 그 단계 없이 진행 — 연구 화면의 'AI 직원'에서 근무 기록 확인)</h3>
+    <div class="fields" style="margin-top:8px">
+      <label class="field check"><input type="checkbox" name="ai.news_analyst_enabled" {{ 'checked' if s.ai.news_analyst_enabled }}>
+        <span>뉴스·공시 애널리스트<span class="hint" style="display:block">뉴스를 사건별로 정리해 수석 연구원에게 전달</span></span></label>
+      <label class="field check"><input type="checkbox" name="ai.quant_analyst_enabled" {{ 'checked' if s.ai.quant_analyst_enabled }}>
+        <span>퀀트 애널리스트<span class="hint" style="display:block">가격 사실·봇 신호로 국면·전략 적합도 판단</span></span></label>
+      <label class="field check"><input type="checkbox" name="ai.risk_manager_enabled" {{ 'checked' if s.ai.risk_manager_enabled }}>
+        <span>리스크 매니저<span class="hint" style="display:block">C 설정: 회사 전체 보유를 보고 AI 매수 비중 축소·거절</span></span></label>
+      <label class="field">애널리스트 추론 강도<select name="ai.analyst_effort">{% for x in ['low','medium','high','xhigh','max'] %}<option {{ 'selected' if s.ai.analyst_effort==x }}>{{ x }}</option>{% endfor %}</select><span class="hint">분류·정리 업무라 medium 권장(high는 추론만으로 출력 한도를 넘길 수 있음). 나머지 직원은 위 추론 강도</span></label>
     </div>
     <p class="small muted" style="margin-top:12px">요율 표(입력/출력 USD, 백만 토큰당): {% for k, p in s.ai.pricing.items() %}<span class="badge">{{ k }} ${{ p.input_usd_per_mtok }}/${{ p.output_usd_per_mtok }}{% if p.changes_on %} → {{ p.changes_on }}부터 ${{ p.new_input_usd_per_mtok }}/${{ p.new_output_usd_per_mtok }}{% endif %} ({{ p.checked_at }})</span>{% endfor %}
       — 표에 없는 모델은 유료 자동 호출이 비활성화됩니다(config/paper.toml 또는 config/config.toml의 <code>[ai.pricing."모델"]</code>에 추가).</p>
@@ -113,7 +123,7 @@
   </div>
 </form>
 
-<section class="card" style="margin-top:18px"><h2>전략 개선 후보(연구 AI 주간 검토·사용자)</h2>
+<section class="card" style="margin-top:18px"><h2>전략 개선 후보(전략 연구원 주간 검토·사용자)</h2>
   <p class="sub">후보는 실거래 전략을 자동으로 덮어쓰지 않습니다. 승격 = 새 설정 버전, 되돌리기 = 이전 파라미터로 새 버전.</p>
   <div class="tbl-wrap" style="margin-top:8px"><table class="small"><tr><th>생성</th><th>출처</th><th>전략</th><th>변경</th><th>이유</th><th>상태</th><th>실험 결과(개발/평가 구간)</th><th></th></tr>
   {% for c in d.candidates %}<tr><td class="nowrap">{{ c.created_at|kst }}</td><td>{{ c.source }}</td><td>{{ c.strategy_id|label('strategy') }}</td>

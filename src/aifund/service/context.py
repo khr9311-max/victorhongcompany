@@ -4,6 +4,7 @@
 - operating: 사용자가 선택한 단일 운용 설정(A/B/C). internal_paper/offline_demo에서는 내부 모의체결,
   broker_sandbox에서는 증권사 모의투자, live에서는 실제 계좌(LIVE 가드 경유)로 주문한다.
 - shadow_A / shadow_B / shadow_C: 같은 스냅샷으로 독립 운용되는 가상 장부(가상 원금, 실예산과 합산 금지).
+  A=규칙 전략만, B=+AI 연구팀, C=+AI 연구팀·검증팀(ai/team.py).
 - baseline_bh: 허용 종목 동일비중 매수·보유 기준, baseline_cash: 현금 유지 기준.
 """
 
@@ -24,6 +25,7 @@ from aifund.ai.demo_responder import demo_responder
 from aifund.ai.gemini import GeminiProvider, thinking_level_for
 from aifund.ai.provider import AnthropicProvider, DemoProvider, LLMProvider, OllamaProvider
 from aifund.ai.service import AIService
+from aifund.ai.team import setting_roles
 from aifund.brokers.base import BrokerAdapter, MarketData
 from aifund.brokers.paper import PaperBroker
 from aifund.config.settings import Settings
@@ -33,13 +35,13 @@ from aifund.control.live import LiveActivations, LiveGuardedBroker
 from aifund.core.money import D, ZERO
 from aifund.core.paths import ModePaths
 from aifund.core.secrets import ModeSecrets, load_mode_secrets
-from aifund.core.timeutil import Clock, SystemClock
+from aifund.core.timeutil import Clock, SystemClock, parse_iso
 from aifund.data.collector import SnapshotCollector
 from aifund.data.demo import DemoMarketData
 from aifund.data.fx import FxService
 from aifund.data.news import NewsCollector
 from aifund.data.store import MarketStore
-from aifund.db.database import Database
+from aifund.db.database import Database, loads
 from aifund.execution.executor import OrderExecutor
 from aifund.execution.reconcile import Reconciler
 from aifund.ledger.ledger import Ledger
@@ -191,13 +193,70 @@ class AppContext:
         return self.ledger.principal(book_id) * ms.allocation_krw / cap
 
     def ai_cost_for_setting(self, setting: str) -> Decimal:
-        """전략별 비용 배분: A=0, B=연구 AI 비용 전액, C=연구+검증 비용 전액(공유 비용은 나누지 않고 각 설정에 모두 반영)."""
-        roles = {"A": (), "B": ("research",), "C": ("research", "review_independent", "review")}.get(setting, ())
+        """전략별 비용 배분: A=0, B=연구팀 비용 전액, C=연구팀+검증팀 비용 전액(공유 비용은 나누지 않고 각 설정에 모두 반영)."""
+        roles = setting_roles(setting)
         if not roles:
             return ZERO
         marks = ",".join("?" for _ in roles)
         rows = self.db.query(f"SELECT cost_krw FROM ai_runs WHERE role IN ({marks}) AND cost_krw IS NOT NULL", roles)
         return sum((D(r[0]) for r in rows), ZERO)
+
+    def risk_book(self) -> str:
+        """리스크 매니저가 보는 장부: 판정이 적용되는 C 설정 장부(운용 장부가 C면 운용 장부, 아니면 비교 C)."""
+        return OPERATING if self.settings.operating_setting == "C" else "shadow_C"
+
+    def ai_portfolio(self, market: str) -> dict[str, Any]:
+        """리스크 매니저 입력. 모든 값은 원장·설정에서 코드가 계산하며 항목마다 인용용 pf:* ID가 있다(한도는 읽기 전용)."""
+        from aifund.ledger.valuation import ASSET_CLASS, value_book
+
+        s = self.settings
+        book = self.risk_book()
+        val = value_book(self.db, self.ledger, book, self.price, self.market_store.instrument, self.fx, s.risk)
+        eq = val.equity_krw
+
+        def pct(v: Decimal) -> float | None:
+            return round(float(v / eq * 100), 2) if eq > 0 else None
+
+        qty: dict[str, dict[str, str]] = {}
+        for p in self.ledger.positions(book):
+            qty.setdefault(p.instrument_id, {})[p.strategy_id] = str(p.qty)
+        items: list[dict[str, Any]] = [{
+            "id": "pf:book", "kind": "book_summary", "book_id": book, "equity_krw": f"{eq:.0f}", "cash_krw": f"{val.cash_krw:.0f}",
+            "reserved_krw": f"{val.reserved_krw:.0f}", "exposure_krw": f"{val.exposure_krw:.0f}",
+            "open_positions": len(val.by_instrument), "stale": val.stale,
+        }]
+        for iid, v in sorted(val.by_instrument.items(), key=lambda kv: -kv[1]):
+            inst = self.market_store.instrument(iid)
+            items.append({"id": f"pf:pos:{iid}", "kind": "holding", "instrument_id": iid, "name": inst.name if inst else None,
+                          "asset_class": ASSET_CLASS.get(iid.split(":")[0]), "value_krw": f"{v:.0f}", "pct_of_equity": pct(v),
+                          "qty_by_strategy": qty.get(iid, {})})
+        for mk, v in sorted(val.by_market.items()):
+            items.append({"id": f"pf:market:{mk}", "kind": "market_exposure", "market": mk, "value_krw": f"{v:.0f}",
+                          "pct_of_equity": pct(v), "allocation_krw": str(s.markets[mk].allocation_krw)})  # type: ignore[index]
+        st = self.equity.state(book)
+        items.append({"id": "pf:risk_state", "kind": "risk_state", "note": "손실 기준 기록 없음(첫 평가 전)"} if st is None else
+                     {"id": "pf:risk_state", "kind": "risk_state", "daily_pnl_krw": f"{st.daily_pnl:.0f}",
+                      "drawdown_pct": f"{st.drawdown_pct:.2f}", "daily_stop_active": st.daily_stop_active,
+                      "drawdown_stop_active": st.drawdown_stop_active})
+        items.append({"id": "pf:limits", "kind": "risk_limits_read_only", "max_open_positions": s.risk.max_open_positions,
+                      "gross_exposure_cap_krw": str(s.risk.gross_exposure_cap_krw),
+                      "max_order_notional_krw": str(s.risk.max_order_notional_krw),
+                      "daily_loss_stop_krw": str(s.risk.daily_loss_stop_krw), "max_drawdown_stop_pct": str(s.risk.max_drawdown_stop_pct)})
+        sleeve = s.strategies.sleeves_for(market).get("ai_research", ZERO) * self.market_capital(book, market)
+        items.append({"id": f"pf:ai_sleeve:{market}", "kind": "ai_sleeve", "market": market, "sleeve_capital_krw": f"{sleeve:.0f}",
+                      "note": "제안 target_weight는 이 금액 대비 비중"})
+        now = self.clock.now()
+        for other in s.enabled_markets():
+            if other == market:
+                continue
+            rr = self.ai.latest_report("research", other)
+            if rr is None or not rr["valid"] or (parse_iso(rr["expires_at"]) or now) <= now:
+                continue
+            for p in loads(rr["report_json"])["report"].get("proposals", []):
+                items.append({"id": f"pf:ai:{other}:{p['proposal_ref']}", "kind": "other_market_ai_proposal", "market": other,
+                              "instrument_id": p["instrument_id"], "action": p["action"], "target_weight": p["target_weight"],
+                              "proposed_at": rr["created_at"], "rationale": p["rationale"][:200]})
+        return {"book_id": book, "valuation_complete": not val.stale, "items": items}
 
 
 def _paper_account(book_id: str) -> str:
@@ -231,7 +290,8 @@ def build_context(paths: ModePaths, *, clock: Clock | None = None, config_path: 
     incidents = Incidents(db, clock, notifier)
     news = NewsCollector(db, clock)
     ai = AIService(db=db, clock=clock, settings_fn=lambda: holder["ctx"].settings, budget_fn=lambda: holder["ctx"].budget(),
-                   provider_fn=lambda: holder["ctx"].provider(), news=news, incidents=incidents, mode=mode)
+                   provider_fn=lambda: holder["ctx"].provider(), news=news, incidents=incidents, mode=mode,
+                   portfolio_fn=lambda market: holder["ctx"].ai_portfolio(market))
     ctx = AppContext(mode=mode, paths=paths, db=db, clock=clock, secrets=secrets, store_settings=store_settings,
                      settings_version=version, settings=settings, locked_settings=locked, market_store=market_store, fx=fx,
                      ledger=ledger, equity=EquityTracker(db, clock), flags=flags, incidents=incidents, notifier=notifier,

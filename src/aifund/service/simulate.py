@@ -51,10 +51,8 @@ async def simulate(ctx: AppContext, hours: int, *, ai: bool = True) -> dict[str,
             summary["orders"] += len(res.orders)
             if ai and ctx.ai.due_research(market) and market in cycle.last_snapshots:
                 snap = cycle.last_snapshots[market]
-                rid = await ctx.ai.research(market, snap, cycle.signals_payload(snap), "scheduled")
-                if rid:
+                if await ctx.ai.run_desk(market, snap, cycle.signals_payload(snap), "scheduled"):
                     summary["research"] += 1
-                    await ctx.ai.review(market, rid)
         # 주문 이후 시세 갱신·체결 확인(주문 시점 이후 시세로만 체결)
         for _k in range(4):
             clock.advance(30)

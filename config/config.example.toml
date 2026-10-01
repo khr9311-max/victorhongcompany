@@ -4,7 +4,7 @@
 # 모든 변경은 버전으로 남습니다. AI는 설정을 바꿀 수 없습니다.
 # 아래 값은 '엔지니어링 프리셋'이며 검증된 최적 투자조건이 아닙니다.
 
-operating_setting = "A"          # 실제 주문에 쓰는 단일 설정: A(규칙만) / B(+연구 AI) / C(+연구·검증 AI)
+operating_setting = "A"          # 실제 주문에 쓰는 단일 설정: A(규칙만) / B(+AI 연구팀) / C(+AI 연구팀·검증팀)
 
 [risk]
 principal_cap_krw = "300000"
@@ -63,12 +63,21 @@ params = { fast = 20, slow = 60 }
 [strategies.mean_reversion]
 enabled = true
 params = { bb_period = 20, bb_k = "2.0", rsi_entry = "30", rsi_exit = "55", stop_loss_pct = "8", max_hold_bars = 48 }
+# 전략 연구소 전략(기본 꺼짐). 과거 데이터 검증에서 무작위 진입보다 낫다는 근거가 나오지 않았으니 모의 운용으로 먼저 확인하세요.
+# 켜려면 아래 주석을 풀고 슬리브 "lab:변형 id"를 배정합니다(슬리브 합 ≤ 1). 변형 목록: aifund lab catalog, 설명: docs/strategy-lab.md
+# [strategies.lab."high_52w.atr_trail"]
+# markets = ["kr_stock", "us_stock"]
+# [strategies.market_sleeves.kr_stock]
+# trend_sma = "0.3"
+# mean_reversion = "0.3"
+# ai_research = "0.2"
+# "lab:high_52w.atr_trail" = "0.2"
 
 [ai]
 enabled = true
 provider = "anthropic"            # anthropic / gemini / ollama / disabled — 모델도 같은 공급자 것으로
 model = "claude-opus-5"           # 다른 선택: claude-sonnet-5·claude-haiku-4-5, 또는 provider="gemini" + gemini-3.8-flash / gemini-3.5-flash-lite
-research_focus = ""               # 연구·검증 AI에 전달할 대표의 관심사(예: "AI·반도체 우선 검토"). 매매 권한 없음
+research_focus = ""               # AI 연구팀·검증 AI에 전달할 대표의 관심사(예: "AI·반도체 우선 검토"). 매매 권한 없음
 effort = "medium"                 # Claude effort / Gemini 추론 강도(thinkingLevel: low·medium·high)
 use_server_fallbacks = true       # Claude 전용: 모델 거절 시 서버측 폴백(비용은 실제 사용 모델 요율로 정산)
 monthly_budget_krw = "5000"       # 월 AI 비용 상한(예약 기준)
@@ -82,6 +91,11 @@ weekly_review_time_kst = "09:10"
 event_move_pct = "5"
 max_event_calls_per_day = 1
 independent_review_pass = true
+# AI 직원(직원마다 연구 1회당 호출 1회 추가 — 예산이 작으면 애널리스트를 끄세요): 연구 1회 = 뉴스·퀀트 애널리스트 → 수석 연구원 → 검증 AI(독립 평가·반론) → 리스크 매니저
+news_analyst_enabled = true       # 뉴스·공시를 사건별로 정리해 수석 연구원에게 전달
+quant_analyst_enabled = true      # 가격 사실·봇 신호로 국면·전략 적합도 판단
+risk_manager_enabled = true       # C 설정: 검증 통과한 AI 매수·유지 제안을 회사 전체 보유와 함께 축소·거절
+analyst_effort = "medium"         # 애널리스트 추론 강도(분류·정리 업무). high는 추론만으로 출력 한도를 넘겨 잘릴 수 있음(2026-09-30 실측)
 veto_rule_buys = true
 when_unavailable = "continue_rules"   # 또는 hold_new_risk
 fallback_usdkrw = "1500"
