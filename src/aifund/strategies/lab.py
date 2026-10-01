@@ -226,6 +226,13 @@ class LabRotation(LabStrategy):
 _CLASSES: dict[str, type[LabStrategy]] = {}
 
 
+def rule_text(v: Variant) -> str:
+    if v.rotation is not None:
+        return v.rotation.rule
+    assert v.entry is not None and v.exit is not None
+    return f"{v.entry.rule} / 청산: {v.exit.rule}"
+
+
 def lab_class(variant_id: str) -> type[LabStrategy]:
     """변형마다 전략 클래스를 하나씩 만든다(전략 id·제목·가설이 클래스 속성인 기존 구조에 맞춤)."""
     cls = _CLASSES.get(variant_id)
@@ -233,16 +240,18 @@ def lab_class(variant_id: str) -> type[LabStrategy]:
         v = find(variant_id)
         if v is None:
             raise KeyError(f"알 수 없는 연구소 전략 {variant_id} (aifund lab catalog 참고)")
-        if v.rotation is not None:
-            base: type[LabStrategy] = LabRotation
-            rule = v.rotation.rule
-        else:
-            assert v.entry is not None and v.exit is not None
-            base, rule = LabTiming, f"{v.entry.rule} / 청산: {v.exit.rule}"
+        base: type[LabStrategy] = LabRotation if v.rotation is not None else LabTiming
         cls = type(f"Lab{len(_CLASSES)}", (base,), {"variant": v, "strategy_id": PREFIX + v.id,
-                                                     "title": f"연구소 · {v.label}", "hypothesis": rule})
+                                                     "title": f"연구소 · {v.label}", "hypothesis": rule_text(v)})
         _CLASSES[variant_id] = cls
     return cls
+
+
+def bars_needed(variant_id: str, market: str, interval: str) -> int:
+    """이 시장·봉 간격에서 판단에 필요한 완성봉 수(모자라면 '데이터 부족'으로 관망)."""
+    strat = lab_class(variant_id)()
+    strat.market, strat.interval = market, interval
+    return strat.min_bars()
 
 
 def lab_strategies(settings: "StrategySettings", market: str) -> list[Strategy]:

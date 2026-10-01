@@ -7,7 +7,7 @@ from typing import Any
 
 from aifund.ai.team import ROSTER
 from aifund.brokers.upbit import UpbitMarketData
-from aifund.config.settings import scope_hash
+from aifund.config.settings import MarketSettings, Settings, scope_hash
 from aifund.control.actions import preview_liquidation
 from aifund.control.live import confirm_phrase
 from aifund.core.money import D, ZERO
@@ -362,12 +362,70 @@ def control_page(ctx: AppContext) -> dict[str, Any]:
             "events": events, "risk_state": risk}
 
 
+def strategy_table(s: Settings) -> dict[str, Any]:
+    """설정 화면 '전략·슬리브' 표. 행 = 전략, 슬리브 열 = 기본 슬리브 + 시장별 슬리브가 있는 시장(설정 구조 그대로).
+
+    아래 카탈로그는 아직 설정에 없는 연구소 변형(기본 해석·대조군 제외). 다른 해석·대조군은 설정 파일로 켠다."""
+    from aifund.lab.catalog import FAMILIES, all_variants, compatible, find
+    from aifund.strategies import mean_reversion, trend  # noqa: F401
+    from aifund.strategies.base import REGISTRY
+    from aifund.strategies.lab import PREFIX, bars_needed, is_lab, rule_text
+
+    st = s.strategies
+    shared = [m for m in s.markets if m not in st.market_sleeves]
+    cols = [{"prefix": "sleeve.", "label": "기본 · " + ("·".join(MARKET_LABELS[m] for m in shared) or "쓰는 시장 없음"),
+             "values": st.sleeves}]
+    cols += [{"prefix": f"msleeve.{m}.", "label": MARKET_LABELS[m], "values": sl} for m, sl in st.market_sleeves.items()]
+    for c in cols:
+        total = sum(c["values"].values(), ZERO)
+        c["total"], c["cash"] = format(total.normalize(), "f"), format((1 - total).normalize(), "f") if total < 1 else None
+    history_cap = next(m.le for m in MarketSettings.model_fields["history_bars"].metadata if hasattr(m, "le"))
+
+    def lab_row(vid: str) -> dict[str, Any]:
+        v = find(vid)
+        assert v is not None
+        tg = st.lab.get(vid)
+        markets = list(tg.markets) if tg else []
+        choices = [m for m in ("crypto", "kr_stock", "us_stock") if compatible(v, m) and (m in s.markets or m in markets)]
+        notes = []
+        for m in markets if tg else choices:  # 데이터 길이가 모자라면 그 시장에서는 늘 '데이터 부족'으로 관망한다
+            ms = s.markets.get(m)
+            if ms is None:
+                continue
+            need, have = bars_needed(vid, m, ms.candle), ms.history_bars or 400
+            if need > history_cap:
+                notes.append(f"{MARKET_LABELS[m]}({ms.candle}): 완성봉 {need:,}개 필요 — 이 봉 간격에서는 쓸 수 없음")
+            elif need > have:
+                notes.append(f"{MARKET_LABELS[m]}({ms.candle}): 완성봉 {need:,}개 필요 — 시장 history_bars를 {need} 이상으로(설정 파일)")
+        return {"id": PREFIX + vid, "vid": vid, "kind": "lab", "label": STRATEGY_LABELS.get(PREFIX + vid, vid),
+                "family": FAMILIES[v.family], "rule": rule_text(v), "enabled": bool(tg and tg.enabled),
+                "markets": markets, "choices": choices, "notes": notes}
+
+    rows: list[dict[str, Any]] = [
+        {"id": sid, "kind": "bot", "label": STRATEGY_LABELS[sid], "rule": REGISTRY[sid].hypothesis,
+         "enabled": getattr(st, sid).enabled} for sid in ("trend_sma", "mean_reversion")]
+    rows.append({"id": "ai_research", "kind": "ai", "label": STRATEGY_LABELS["ai_research"],
+                 "rule": "수석 연구원 제안(B·C 설정에서만 운용, A에서는 현금 유지)"})
+    shown = list(st.lab)
+    shown += [sid[len(PREFIX):] for c in cols for sid in c["values"]  # 슬리브만 있고 설정에 없는 연구소 전략
+              if is_lab(sid) and find(sid[len(PREFIX):]) is not None and sid[len(PREFIX):] not in shown]
+    rows += [lab_row(vid) for vid in dict.fromkeys(shown)]
+    known = {r["id"] for r in rows}
+    rows += [{"id": sid, "kind": "other", "label": sid, "rule": "알 수 없는 슬리브 키(설정 파일에서 확인)"}
+             for sid in dict.fromkeys(sid for c in cols for sid in c["values"]) if sid not in known]
+    catalog = [{"family": label, "rows": [lab_row(v.id) for v in all_variants()
+                                          if v.family == fam and v.interp == "v1" and not v.control and v.id not in shown]}
+               for fam, label in FAMILIES.items()]
+    return {"cols": cols, "rows": rows, "catalog": [g for g in catalog if g["rows"]],
+            "catalog_count": sum(len(g["rows"]) for g in catalog)}
+
+
 def settings_page(ctx: AppContext) -> dict[str, Any]:
     cands = [dict(r) | {"params": loads(r["params_json"], {}), "base": loads(r["base_params_json"], {}),
                         "bt": loads(r["backtest_json"], None)}
              for r in ctx.db.query("SELECT * FROM strategy_candidates ORDER BY created_at DESC LIMIT 20")]
     return {"s": ctx.settings, "version": ctx.settings_version, "history": ctx.store_settings.history(30), "locked": ctx.locked_settings,
-            "candidates": cands}
+            "candidates": cands, "strat": strategy_table(ctx.settings)}
 
 
 def dec(v: Any) -> Decimal | None:

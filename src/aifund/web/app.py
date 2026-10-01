@@ -21,7 +21,9 @@ from aifund.core.money import D, fmt_krw, fmt_num
 from aifund.core.paths import MODE_LABELS
 from aifund.core.timeutil import kst_str, parse_iso
 from aifund.evaluation import candidates as cand
+from aifund.lab.catalog import all_variants, find
 from aifund.service.context import AppContext
+from aifund.strategies.lab import PREFIX as LAB_PREFIX, is_lab
 from aifund.web import charts, labels, views
 from aifund.web.auth import COOKIE, check_host, make_session, read_session, token_ok
 
@@ -383,9 +385,31 @@ def apply_form(current: Settings, form: dict[str, str]) -> Settings:
                 data["news"]["naver_queries"].pop(market, None)
     if "ai.research_focus" in form:  # 비워서 저장하면 관심사 지시를 없앤다
         data["ai"]["research_focus"] = form["ai.research_focus"].strip()
-    for sid in list(data["strategies"]["sleeves"]):  # 화면에 보인 기본 슬리브(연구소 전략 포함)
-        if form.get(f"sleeve.{sid}"):
-            data["strategies"]["sleeves"][sid] = form[f"sleeve.{sid}"]
+    st = data["strategies"]
+    for v in all_variants():  # 연구소 전략: 설정에 있는 것은 사용·시장을 고치고, 카탈로그에서 '추가'를 체크한 것은 새로 넣는다
+        on = form.get(f"lab.{v.id}.enabled") == "on"
+        if f"lab.{v.id}.present" not in form and not (on and v.id not in st["lab"]):
+            continue
+        markets = [m for m in ("crypto", "kr_stock", "us_stock") if form.get(f"lab.{v.id}.m.{m}") == "on"]
+        if on and not markets:
+            raise ValueError(f"연구소 {v.label}: 쓸 시장을 하나 이상 고르세요")
+        st["lab"][v.id] = {"enabled": on, "markets": markets}
+    sleeve_sets = {"sleeve.": st["sleeves"]} | {f"msleeve.{m}.": sl for m, sl in st["market_sleeves"].items()}
+    for key, value in form.items():  # 슬리브 표의 칸(기본·시장별). 비우면 그 전략 몫을 없앤다(= 0)
+        prefix = next((p for p in sleeve_sets if key.startswith(p)), None)
+        if prefix is None:
+            continue
+        sid, value = key[len(prefix):], value.strip()
+        vid = sid[len(LAB_PREFIX):] if is_lab(sid) else None
+        if sid not in ("trend_sma", "mean_reversion", "ai_research") and (vid is None or find(vid) is None):
+            raise ValueError(f"알 수 없는 슬리브 {sid}")
+        if not value:
+            sleeve_sets[prefix].pop(sid, None)
+        elif vid is not None and vid not in st["lab"]:
+            if D(value) > 0:
+                raise ValueError(f"{labels.STRATEGY_LABELS[sid]}: 슬리브를 넣으려면 '추가'도 체크하세요")
+        else:
+            sleeve_sets[prefix][sid] = value
     for sid, keys in (("trend_sma", ("fast", "slow")), ("mean_reversion", ("bb_period", "bb_k", "rsi_entry", "rsi_exit", "stop_loss_pct", "max_hold_bars"))):
         for k in keys:
             v = form.get(f"p.{sid}.{k}")

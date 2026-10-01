@@ -49,13 +49,35 @@
     <p class="small muted">국내·미국주식 시세: KIS(기본) 또는 키움 조회 전용. 내부 모의운용 주문은 가상 체결됩니다.</p>
   </section>
 
+  {% macro strategy_row(r, cols, catalog=false) %}
+    <tr><td>{{ r.label }}{% if r.family and not catalog %} <span class="badge">{{ r.family }}</span>{% endif %}
+        {% if r.rule %}<span class="cell-sub">{{ r.rule }}</span>{% endif %}{% for n in r.notes %}<span class="cell-sub warn">{{ n }}</span>{% endfor %}</td>
+      <td>{% if r.kind == 'bot' %}<input type="hidden" name="s.{{ r.id }}.present" value="1"><input type="checkbox" name="s.{{ r.id }}.enabled" aria-label="{{ r.label }} 사용" {{ 'checked' if r.enabled }}>
+        {%- elif r.kind == 'lab' %}{% if not catalog %}<input type="hidden" name="lab.{{ r.vid }}.present" value="1">{% endif %}<input type="checkbox" name="lab.{{ r.vid }}.enabled" aria-label="{{ r.label }} {{ '추가' if catalog else '사용' }}" {{ 'checked' if r.enabled }}>
+        {%- elif r.kind == 'ai' %}<span class="muted nowrap">B·C 설정</span>{% endif %}</td>
+      <td class="nowrap">{% if r.kind == 'lab' %}<span class="row-gap" style="flex-wrap:nowrap">{% for m in r.choices %}<label class="nowrap"><input type="checkbox" name="lab.{{ r.vid }}.m.{{ m }}" {{ 'checked' if m in r.markets }}> {{ m|label('market') }}</label>{% endfor %}</span>
+        {%- elif r.kind == 'other' %}-{% else %}<span class="nowrap">사용 시장 전체</span>{% endif %}</td>
+      {% for c in cols %}<td class="n">{% if r.kind == 'other' %}{{ c['values'].get(r.id, '-') }}{% else %}<input name="{{ c.prefix }}{{ r.id }}" value="{{ c['values'].get(r.id, '') }}" size="4" inputmode="decimal" aria-label="{{ r.label }} 슬리브({{ c.label }})">{% endif %}</td>{% endfor %}</tr>
+  {% endmacro %}
   <section class="card">
     <h2>전략·슬리브</h2>
-    <p class="sub">슬리브 = 시장 배정액 중 전략별 비율(합계 1 이하). A 설정에서는 AI 슬리브를 현금으로 둡니다.</p>
+    <p class="sub">슬리브 = 시장 배정액 중 전략별 비율. 열마다 합계 1 이하이고 남는 몫은 현금입니다. 시장별 슬리브가 있는 시장은 그 시장 열을, 없는 시장은 '기본' 열을 씁니다. 칸을 비우면 그 전략 몫은 0입니다. A 설정에서는 AI 슬리브를 현금으로 둡니다.</p>
+    <div class="tbl-wrap" style="margin-top:10px"><table class="small">
+      <tr><th>전략</th><th>사용</th><th>시장</th>{% for c in d.strat.cols %}<th class="n">슬리브<span class="cell-sub">{{ c.label }}</span></th>{% endfor %}</tr>
+      {% for r in d.strat.rows %}{{ strategy_row(r, d.strat.cols) }}{% endfor %}
+      <tr class="hl"><td colspan="3">합계</td>{% for c in d.strat.cols %}<td class="n">{{ c.total }}{% if c.cash %}<span class="cell-sub">나머지 현금 {{ c.cash }}</span>{% endif %}</td>{% endfor %}</tr>
+    </table></div>
+    <p class="small muted" style="margin-top:8px">전략을 끄면 새 신호를 내지 않고, 그 전략이 이미 산 보유분은 그대로 둡니다(정리는 제어 화면의 보유분 청산). 연구소 전략은 과거 데이터 검증에서 무작위 진입보다 낫다는 근거가 나오지 않았습니다(docs/strategy-lab.md) — 모의 운용으로 전진 검증하는 용도입니다.</p>
+    {% if d.strat.catalog %}<details class="table-view">
+      <summary>연구소 전략 추가 — 아직 쓰지 않는 {{ d.strat.catalog_count }}개</summary>
+      <p class="small muted">'추가'와 시장을 체크하고 슬리브를 넣어 저장하세요. 슬리브가 비어 있으면 신호만 기록하고 주문하지 않습니다. 책 패턴의 다른 해석(느슨·엄격·국면 맞춤)과 대조군은 설정 파일의 <code>[strategies.lab]</code>로 켭니다.</p>
+      <div class="tbl-wrap"><table class="small">
+        <tr><th>전략</th><th>추가</th><th>시장</th>{% for c in d.strat.cols %}<th class="n">슬리브<span class="cell-sub">{{ c.label }}</span></th>{% endfor %}</tr>
+        {% for g in d.strat.catalog %}<tr><th colspan="{{ 3 + d.strat.cols|length }}">{{ g.family }}</th></tr>
+          {% for r in g.rows %}{{ strategy_row(r, d.strat.cols, true) }}{% endfor %}{% endfor %}
+      </table></div>
+    </details>{% endif %}
     <div class="fields" style="margin-top:12px">
-      <label class="field check"><input type="hidden" name="s.trend_sma.present" value="1"><input type="checkbox" name="s.trend_sma.enabled" {{ 'checked' if s.strategies.trend_sma.enabled }}> 봇 A 추세 사용</label>
-      <label class="field check"><input type="hidden" name="s.mean_reversion.present" value="1"><input type="checkbox" name="s.mean_reversion.enabled" {{ 'checked' if s.strategies.mean_reversion.enabled }}> 봇 B 평균회귀 사용</label>
-      {% for sid, w in s.strategies.sleeves.items() %}<label class="field">슬리브 {{ sid|label('strategy') }}<input name="sleeve.{{ sid }}" value="{{ w }}" inputmode="decimal"></label>{% endfor %}
       <label class="field">추세 fast<input name="p.trend_sma.fast" value="{{ s.strategies.trend_sma.params.get('fast', 20) }}" inputmode="numeric"></label>
       <label class="field">추세 slow<input name="p.trend_sma.slow" value="{{ s.strategies.trend_sma.params.get('slow', 60) }}" inputmode="numeric"></label>
       <label class="field">평균회귀 BB 기간<input name="p.mean_reversion.bb_period" value="{{ s.strategies.mean_reversion.params.get('bb_period', 20) }}" inputmode="numeric"></label>
