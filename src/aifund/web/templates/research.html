@@ -1,75 +1,120 @@
 {% extends "base.html" %}
+{% import "_ui.html" as ui %}
 {% block title %}연구·검증{% endblock %}
 {% block content %}
-<div class="card">
-  <h2>AI 상태</h2>
-  <p>공급자 <b>{{ d.provider }}</b> · 모델 <b>{{ d.model }}</b>{% if d.locked %} <span class="chip">환경변수 고정: {{ d.locked }}</span>{% endif %} ·
-     상태 <b class="{{ 'ok' if d.availability[0] else 'warn' }}">{{ d.availability[1] }}</b></p>
-  <p class="small">요율: {% if d.pricing %}입력 ${{ d.pricing.input_usd_per_mtok }}/MTok, 출력 ${{ d.pricing.output_usd_per_mtok }}/MTok (출처 {{ d.pricing.source }}, 확인 {{ d.pricing.checked_at }}){% else %}<span class="bad">미설정 → 유료 자동 호출 비활성</span>{% endif %}</p>
-  <p class="small">이번 달({{ d.budget.month }}) 사용 {{ d.budget.settled_krw|krw }} + 예약 {{ d.budget.reserved_krw|krw }} / 한도 {{ d.budget.cap_krw|krw }}
-     {% if d.budget.estimated %}<span class="warn">일부 비용은 추정(환율 대체·타임아웃 보수 정산)</span>{% endif %}.
-     한도로 모든 모델·빈도를 보장하지 않습니다. AI는 주문·쉘·설정 변경 권한이 없습니다.</p>
-  {% if sess %}<form class="inline" method="post" action="/control/research"><input type="hidden" name="csrf" value="{{ csrf }}">
-    <select name="market"><option value="crypto">crypto</option><option value="kr_stock">kr_stock</option><option value="us_stock">us_stock</option></select>
-    <button>지금 연구 실행(예산 차감)</button></form>{% endif %}
-  <p class="small muted">뉴스 피드: {% for k, v in d.feeds.items() %}<span class="chip">{{ k }} {{ '정상 +' ~ v.new_items if v.ok else '실패 ' ~ v.error }}</span>{% else %}이번 실행에서 수집 기록 없음{% endfor %}</p>
+<div class="page-head">
+  <div class="grow">
+    <h1>연구·검증</h1>
+    <p class="sub">연구 AI가 시세·전략 신호·뉴스를 요약하고 제안하면, 검증 AI가 먼저 독립 평가한 뒤 반론을 냅니다. AI는 주문·쉘·설정 변경 권한이 없습니다.</p>
+  </div>
 </div>
 
+<div class="grid g2">
+  <section class="card">
+    <div class="card-head"><h2 class="grow">AI 상태</h2>{{ ui.yesno(d.availability[0], d.availability[1], d.availability[1]) }}</div>
+    {% if d.demo_ai %}<p class="small">{{ ui.st('warning', '데모 모드') }} 실제 AI 대신 가짜 응답을 씁니다(비용 0). 아래 공급자·모델은 설정값입니다.</p>{% endif %}
+    <dl class="kv">
+      <dt>공급자 · 모델</dt><dd><b>{{ d.provider }}</b> · <b>{{ d.model }}</b> · 추론 강도 {{ d.effort }}
+        {% if d.locked %}<span class="badge">환경변수 고정: {{ d.locked }}</span>{% endif %}</dd>
+      <dt>요율</dt><dd>{% if d.pricing %}입력 ${{ d.rates_now[0] }}/MTok · 출력 ${{ d.rates_now[1] }}/MTok
+          <span class="cell-sub">출처 {{ d.pricing.source }} · 확인 {{ d.pricing.checked_at }}{% if d.pricing.changes_on %} · {{ d.pricing.changes_on }}부터 ${{ d.pricing.new_input_usd_per_mtok }}/${{ d.pricing.new_output_usd_per_mtok }}로 자동 계산{% endif %}</span>
+        {% else %}{{ ui.st('critical', '미설정 → 유료 자동 호출 비활성') }}{% endif %}</dd>
+      <dt>이번 달({{ d.budget.month }})</dt><dd>{{ d.budget.settled_krw|krw }} 사용 + {{ d.budget.reserved_krw|krw }} 예약 / 한도 {{ d.budget.cap_krw|krw }}
+        {% if d.budget.estimated %}<span class="warn">일부 비용은 추정(환율 대체·타임아웃 보수 정산)</span>{% endif %}
+        <div class="meter {{ 'critical' if d.budget_pct >= 100 else ('warning' if d.budget_pct >= 80 else '') }}" tabindex="0"
+             data-tip="월 한도의 {{ '%.1f'|format(d.budget_pct) }}% 사용·예약"><span style="width:{{ '%.1f'|format([d.budget_pct, 100]|min) }}%"></span></div>
+        <span class="cell-sub">한도는 호출 폭주를 막는 안전장치입니다. 모든 모델·빈도를 보장하지 않습니다.</span></dd>
+    </dl>
+    {% if sess %}<form class="inline" method="post" action="/control/research" style="margin-top:12px"><input type="hidden" name="csrf" value="{{ csrf }}">
+      <select name="market">{% for key in ['crypto', 'kr_stock', 'us_stock'] %}<option value="{{ key }}">{{ key|label('market') }}</option>{% endfor %}</select>
+      <button>지금 연구 실행(예산 차감)</button></form>
+    {% else %}<p class="small muted" style="margin-top:12px">수동 연구 실행은 관리자 로그인 후 가능합니다.</p>{% endif %}
+  </section>
+  <section class="card">
+    <h2>정기 연구 일정</h2>
+    <p class="sub">직전 봉이 크게 움직이면 시장별 하루 최대 {{ d.max_event_calls }}회 추가 연구 · 연구 뒤 검증 AI가 이어서 실행</p>
+    <div class="tbl-wrap" style="margin-top:8px"><table><tr><th>시장</th><th>정기 연구</th><th>최근 연구</th><th class="n">오늘 급변 연구</th></tr>
+    {% for s in d.schedule %}<tr><td>{{ ui.market(s.market, s.slot) }}</td><td>{{ s.rule }}</td>
+      <td>{% if s.last %}{{ s.last|ago }} {% if s.last_valid %}{{ ui.st('good', '검증 통과') }}{% else %}{{ ui.st('warning', '검증 실패') }}{% endif %}<span class="cell-sub">{{ s.last|kst }}</span>{% else %}<span class="muted">아직 없음</span>{% endif %}</td>
+      <td class="n">{{ s.events_today }} / {{ d.max_event_calls }}</td></tr>
+    {% else %}<tr><td colspan="4" class="empty">사용 중인 시장 없음</td></tr>{% endfor %}
+    </table></div>
+    <p class="small muted" style="margin-top:10px">뉴스 수집 상태: {% for k, v in d.feeds.items() %}<span class="badge">{% if v.ok %}<b class="ok">✓</b> {{ k }} +{{ v.new_items }}{% else %}<b class="bad">✕</b> {{ k }} 실패 {{ v.error }}{% endif %}</span>{% else %}이번 실행에서 수집 기록 없음{% endfor %}</p>
+  </section>
+</div>
+
+<section class="card" style="margin-top:14px">
+  <div class="card-head"><div class="grow"><h2>시장 뉴스·공시</h2><p class="sub">수집한 외부 자료입니다(신뢰하지 않는 데이터로 AI에 전달). 발표·수집 시각과 원문을 확인하세요.</p></div></div>
+  <div class="tbl-wrap"><table><tr><th>출처</th><th>제목</th><th>발표</th><th>수집</th></tr>
+  {% for n in d.news %}<tr><td class="small">{{ n.feed }}</td>
+    <td>{% if n.url %}<a href="{{ n.url }}" target="_blank" rel="noopener noreferrer">{{ n.title }}</a>{% else %}{{ n.title }}{% endif %}{% if n.summary %}<span class="cell-sub">{{ n.summary[:140] }}</span>{% endif %}</td>
+    <td class="nowrap">{{ n.published_at|ago }}<span class="cell-sub">{{ n.published_at|kst }}</span></td><td class="nowrap small">{{ n.fetched_at|kst }}</td></tr>
+  {% else %}<tr><td colspan="4" class="empty">수집된 자료가 없습니다.</td></tr>{% endfor %}
+  </table></div>
+</section>
+
+<div class="section-title"><h2>AI 보고서</h2><span class="small muted">최근 12건 · 최근 3건만 펼침(제목을 누르면 열림) · 검증 실패한 보고서의 제안은 보류됩니다</span></div>
 {% for r in d.reports %}
-<div class="card">
-  <h2>{{ {'research':'연구 AI 보고서','review':'검증 AI 반론','review_independent':'검증 AI 독립 평가','strategy_review':'주간 전략 검토'}.get(r.role, r.role) }}
-      · {{ r.market }} · {{ r.created_at|kst }} · <span class="{{ 'ok' if r.valid else 'bad' }}">{{ '검증 통과' if r.valid else '검증 실패(제안 보류)' }}</span></h2>
+<details class="card report" {% if loop.index <= 3 %}open{% endif %}>
+  <summary>
+    <h2>{{ {'research':'연구 AI 보고서','review':'검증 AI 반론','review_independent':'검증 AI 독립 평가','strategy_review':'주간 전략 검토'}.get(r.role, r.role) }}</h2>
+    {% if r.market and r.market != 'all' %}{{ ui.market(r.market) }}{% endif %}
+    <span class="small muted">{{ r.created_at|kst }} · {{ r.created_at|ago }}</span><span class="spacer"></span>
+    {% if r.valid %}{{ ui.st('good', '검증 통과') }}{% else %}{{ ui.st('critical', '검증 실패(제안 보류)') }}{% endif %}
+  </summary>
   {% if r.errors %}<p class="bad small">{{ r.errors|join(' / ') }}</p>{% endif %}
   <p class="small muted">스냅샷 {{ r.snapshot_id or '-' }} · 만료 {{ r.expires_at|kst }} · 상위 {{ r.parent_report_id or '-' }}</p>
   {% set rep = r.report %}
-  {% if rep.market_summary %}<p>{{ rep.market_summary }}</p><p class="small warn">자료 상태: {{ rep.data_status }}</p>{% endif %}
-  {% if rep.summary %}<p>{{ rep.summary }}</p>{% endif %}
+  {% if rep.market_summary %}<p class="quote">{{ rep.market_summary }}</p><p class="small">{{ ui.st('warning', '자료 상태') }} {{ rep.data_status }}</p>{% endif %}
+  {% if rep.summary %}<p class="quote">{{ rep.summary }}</p>{% endif %}
   {% if r.data_status %}<p class="small muted">번들 상태: {{ r.data_status|join(' · ') }}</p>{% endif %}
   {% if rep.instrument_views %}
-  <table><tr><th>종목</th><th>입장</th><th>요약</th><th>주장(근거)</th><th>자료 공백</th></tr>
-  {% for v in rep.instrument_views %}<tr><td>{{ v.instrument_id }}</td><td>{{ v.stance }}</td><td class="small">{{ v.summary }}</td>
+  <div class="tbl-wrap"><table><tr><th>종목</th><th>입장</th><th>요약</th><th>주장(근거)</th><th>자료 공백</th></tr>
+  {% for v in rep.instrument_views %}<tr><td class="nowrap">{{ v.instrument_id }}</td><td>{{ ui.stance(v.stance) }}</td><td class="small">{{ v.summary }}</td>
     <td class="small">{% for c in v.claims %}{{ c.text }} <span class="muted">[{{ c.source_ids|join(', ') }}]</span><br>{% endfor %}</td><td class="small">{{ v.data_gaps|join(', ') }}</td></tr>{% endfor %}
-  </table>{% endif %}
+  </table></div>{% endif %}
   {% if rep.proposals %}
-  <h3 class="small">제안</h3>
-  <table><tr><th>ID</th><th>종목</th><th>방향</th><th>AI 슬리브 비중</th><th>근거</th><th>반론</th><th>무효화 조건</th><th>기간</th><th>비용 고려</th></tr>
-  {% for p in rep.proposals %}<tr><td>{{ p.proposal_ref }}</td><td>{{ p.instrument_id }}</td><td>{{ p.action|label('action') }}</td><td>{{ p.target_weight }}</td>
+  <h3 class="small" style="margin-top:12px">제안</h3>
+  <div class="tbl-wrap"><table><tr><th>ID</th><th>종목</th><th>방향</th><th class="n">AI 슬리브 비중</th><th>근거</th><th>반론</th><th>무효화 조건</th><th>기간</th><th>비용 고려</th></tr>
+  {% for p in rep.proposals %}<tr><td>{{ p.proposal_ref }}</td><td class="nowrap">{{ p.instrument_id }}</td><td>{{ ui.action(p.action) }}</td><td class="n">{{ p.target_weight }}</td>
     <td class="small">{{ p.rationale }} <span class="muted">[{{ p.source_ids|join(', ') }}]</span></td><td class="small">{{ p.counterarguments|join(' / ') }}</td>
-    <td class="small">{{ p.invalidation }}</td><td>{{ p.horizon_hours }}h</td><td class="small">{{ p.cost_considered }}</td></tr>{% endfor %}
-  </table>{% endif %}
+    <td class="small">{{ p.invalidation }}</td><td class="nowrap">{{ p.horizon_hours }}h</td><td class="small">{{ p.cost_considered }}</td></tr>{% endfor %}
+  </table></div>{% endif %}
   {% if rep.proposal_reviews %}
-  <h3 class="small">제안별 검증</h3>
-  <table><tr><th>제안</th><th>판정</th><th>반론(분류: 내용 [근거])</th></tr>
-  {% for p in rep.proposal_reviews %}<tr><td>{{ p.proposal_ref }}</td><td class="{{ 'ok' if p.verdict=='accept' else 'bad' }}">{{ '채택 가능' if p.verdict=='accept' else '거절' }}</td>
+  <h3 class="small" style="margin-top:12px">제안별 검증</h3>
+  <div class="tbl-wrap"><table><tr><th>제안</th><th>판정</th><th>반론(분류: 내용 [근거])</th></tr>
+  {% for p in rep.proposal_reviews %}<tr><td>{{ p.proposal_ref }}</td><td>{% if p.verdict == 'accept' %}{{ ui.st('good', '채택 가능') }}{% else %}{{ ui.st('critical', '거절') }}{% endif %}</td>
     <td class="small">{% for o in p.objections %}{{ o.category }}: {{ o.detail }} <span class="muted">[{{ o.source_ids|join(', ') }}]</span><br>{% else %}없음{% endfor %}</td></tr>{% endfor %}
-  </table>{% endif %}
-  {% if rep.stance_checks %}<p class="small">입장 검토: {% for s in rep.stance_checks %}<span class="chip">{{ s.instrument_id }} {{ s.agreement }}</span>{% endfor %}</p>{% endif %}
-  {% if rep.improvement_ideas %}<p class="small">개선 후보: {% for i in rep.improvement_ideas %}<span class="chip">{{ i.strategy_id }} {{ i.changes }}</span>{% endfor %} → 설정 화면에서 실험·승격</p>{% endif %}
-  {% if r.sources %}<details><summary class="small">원자료 {{ r.sources|length }}건(출처·발표·수집 시각)</summary>
-    <table class="small"><tr><th>ID</th><th>제목</th><th>발표</th><th>수집</th></tr>
-    {% for s in r.sources %}<tr><td>{{ s.id }}</td><td>{% if s.url %}<a href="{{ s.url }}" rel="noopener noreferrer" target="_blank">{{ s.title }}</a>{% else %}{{ s.title }}{% endif %}</td><td>{{ s.published_at|kst }}</td><td>{{ s.fetched_at|kst }}</td></tr>{% endfor %}
-    </table></details>{% endif %}
-</div>
-{% else %}<div class="card muted">AI 보고서가 아직 없습니다. 사유는 아래 실행 기록을 확인하세요.</div>{% endfor %}
+  </table></div>{% endif %}
+  {% if rep.stance_checks %}<p class="small" style="margin-top:8px">입장 검토: {% for s in rep.stance_checks %}<span class="badge">{{ s.instrument_id }} {{ s.agreement }}</span>{% endfor %}</p>{% endif %}
+  {% if rep.improvement_ideas %}<p class="small">개선 후보: {% for i in rep.improvement_ideas %}<span class="badge">{{ i.strategy_id }} {{ i.changes }}</span>{% endfor %} → <a href="/settings">설정 화면</a>에서 실험·승격</p>{% endif %}
+  {% if r.sources %}<details style="margin-top:8px"><summary class="small">원자료 {{ r.sources|length }}건(출처·발표·수집 시각)</summary>
+    <div class="tbl-wrap"><table class="small"><tr><th>ID</th><th>제목</th><th>발표</th><th>수집</th></tr>
+    {% for s in r.sources %}<tr><td class="small">{{ s.id }}</td><td>{% if s.url %}<a href="{{ s.url }}" rel="noopener noreferrer" target="_blank">{{ s.title }}</a>{% else %}{{ s.title }}{% endif %}</td><td class="nowrap">{{ s.published_at|kst }}</td><td class="nowrap">{{ s.fetched_at|kst }}</td></tr>{% endfor %}
+    </table></div></details>{% endif %}
+</details>
+{% else %}<div class="card muted-card muted">AI 보고서가 아직 없습니다. 사유는 아래 실행 기록을 확인하세요.</div>{% endfor %}
 
-<div class="card">
+<section class="card">
   <h2>최종 채택·거절(운용 장부 제안 기록)</h2>
-  <table><tr><th>시각</th><th>전략</th><th>종목</th><th>행동</th><th>목표</th><th>결정</th><th>사유</th><th>근거</th><th>스냅샷</th></tr>
-  {% for p in d.proposals %}<tr><td>{{ p.created_at|kst }}</td><td>{{ p.strategy_id|label('strategy') }}</td><td>{{ p.instrument_id }}</td><td>{{ p.action|label('action') }}</td>
-    <td>{{ p.target_weight }}</td><td class="{{ 'ok' if p.status=='adopted' else 'bad' }}">{{ '채택' if p.status=='adopted' else '거절' }}</td>
+  <div class="tbl-wrap" style="margin-top:8px"><table><tr><th>시각</th><th>전략</th><th>종목</th><th>행동</th><th class="n">목표</th><th>결정</th><th>사유</th><th>근거</th><th>스냅샷</th></tr>
+  {% for p in d.proposals %}<tr><td class="nowrap">{{ p.created_at|kst }}</td><td class="nowrap">{{ p.strategy_id|label('strategy') }}</td><td class="nowrap">{{ p.instrument_id }}</td><td>{{ ui.action(p.action) }}</td>
+    <td class="n">{{ p.target_weight }}</td><td>{% if p.status == 'adopted' %}{{ ui.st('good', '채택') }}{% else %}{{ ui.st('critical', '거절') }}{% endif %}</td>
     <td class="small">{{ p.decision_reason }}</td><td class="small">{{ p.rationale }}{% if p.sources %} <span class="muted">[{{ p.sources|join(', ') }}]</span>{% endif %}</td>
     <td class="small muted">{{ p.snapshot_id[-10:] }}</td></tr>
-  {% else %}<tr><td colspan="9" class="muted">없음</td></tr>{% endfor %}
-  </table>
-</div>
+  {% else %}<tr><td colspan="9" class="empty">없음</td></tr>{% endfor %}
+  </table></div>
+</section>
 
-<div class="card">
+<section class="card">
   <h2>AI 실행 기록(비용·토큰·실패 사유)</h2>
-  <table><tr><th>시각</th><th>역할</th><th>시장</th><th>트리거</th><th>모델</th><th>상태</th><th class="n">입력</th><th class="n">출력</th><th class="n">비용</th><th>오류</th></tr>
-  {% for r in d.runs %}<tr><td>{{ r.started_at|kst }}</td><td>{{ r.role }}</td><td>{{ r.market or '-' }}</td><td class="small">{{ r.trigger }}</td><td class="small">{{ r.served_models or r.model }}</td>
-    <td class="{{ 'ok' if r.status=='ok' else 'warn' }}">{{ r.status }}</td><td class="n">{{ r.input_tokens or '-' }}</td><td class="n">{{ r.output_tokens or '-' }}</td>
+  <div class="tbl-wrap" style="margin-top:8px"><table><tr><th>시각</th><th>역할</th><th>시장</th><th>트리거</th><th>모델</th><th>상태</th><th class="n">입력</th><th class="n">출력</th><th class="n">비용</th><th>오류</th></tr>
+  {% for r in d.runs %}<tr><td class="nowrap">{{ r.started_at|kst }}</td><td class="nowrap">{{ r.role|label('role') }}</td><td class="nowrap">{{ (r.market or '-')|label('market') }}</td>
+    <td class="small">{{ r.trigger|trigger }}</td><td class="small">{{ r.served_models or r.model }}</td>
+    <td class="nowrap">{% if r.status == 'ok' %}{{ ui.st('good', r.status|label('run')) }}{% elif r.status in ('running',) %}{{ ui.st('neutral', r.status|label('run')) }}{% else %}{{ ui.st('warning', r.status|label('run')) }}{% endif %}</td>
+    <td class="n">{{ r.input_tokens or '-' }}</td><td class="n">{{ r.output_tokens or '-' }}</td>
     <td class="n">{{ r.cost_krw|krw if r.cost_krw else '-' }}{% if r.cost_estimated %}<span class="warn">*</span>{% endif %}</td><td class="small">{{ (r.error or '')[:160] }}</td></tr>
-  {% else %}<tr><td colspan="10" class="muted">없음</td></tr>{% endfor %}
-  </table><p class="small muted">* 추정 비용</p>
-</div>
+  {% else %}<tr><td colspan="10" class="empty">없음</td></tr>{% endfor %}
+  </table></div><p class="small muted">* 추정 비용</p>
+</section>
 {% endblock %}

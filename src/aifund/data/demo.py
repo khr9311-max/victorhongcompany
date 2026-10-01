@@ -63,14 +63,18 @@ class DemoMarketData(MarketData):
     def _price_at(self, iid: str, dt: datetime) -> float:
         minute = int((dt - EPOCH).total_seconds() // 60)
         day, m = divmod(minute, DAY_MIN)
-        return self._path(iid, day)[m]
+        price = self._path(iid, max(0, day))[m]
+        return price / 1000 if iid.startswith("us_stock:") else price
 
     async def instruments(self, market: str, symbols: list[str]) -> list[Instrument]:
         return [
             Instrument(
                 instrument_id=f"{market}:{s}", market=market, symbol=s, exchange="DEMO", name=f"[데모] {s}",
-                quote_ccy="KRW", base_asset=s.split("-")[-1], tick_policy="upbit_krw", fixed_tick=None,
-                qty_step=UPBIT_VOLUME_STEP, min_notional=UPBIT_KRW_MIN_ORDER, max_notional=None, status="active",
+                quote_ccy="USD" if market == "us_stock" else "KRW", base_asset=s.split("-")[-1],
+                tick_policy="upbit_krw" if market == "crypto" else "krx" if market == "kr_stock" else "fixed",
+                fixed_tick=D("0.01") if market == "us_stock" else None,
+                qty_step=UPBIT_VOLUME_STEP if market == "crypto" else D(1),
+                min_notional=UPBIT_KRW_MIN_ORDER if market == "crypto" else D(1), max_notional=None, status="active",
                 source="DEMO(가짜 데이터)",
             )
             for s in symbols
@@ -82,9 +86,18 @@ class DemoMarketData(MarketData):
         last_open = floor_to_interval(now, minutes)
         iid = instrument.instrument_id
         out = []
-        for k in range(count - 1, -1, -1):
-            o_t = last_open - timedelta(minutes=minutes * k)
-            c_t = o_t + timedelta(minutes=minutes)
+        periods = [(last_open - timedelta(minutes=minutes * k), last_open - timedelta(minutes=minutes * (k - 1)))
+                   for k in range(count - 1, -1, -1)]
+        if interval == "1d" and instrument.market != "crypto":
+            from aifund.markets.calendar import _calendar
+
+            cal = _calendar(instrument.market)
+            end_day = now.astimezone(cal.tz).date()
+            sessions = cal.sessions_in_range((end_day - timedelta(days=count * 2 + 30)).isoformat(), end_day.isoformat())
+            periods = [(cal.session_open(day).to_pydatetime(), cal.session_close(day).to_pydatetime())
+                       for day in sessions if cal.session_open(day).to_pydatetime() <= now][-count:]
+        precision = 2 if instrument.quote_ccy == "USD" else 0
+        for o_t, c_t in periods:
             end_t = min(c_t, now)
             step = max(1, minutes // 15)
             pts = []
@@ -95,7 +108,7 @@ class DemoMarketData(MarketData):
             pts.append(self._price_at(iid, end_t))
             vol = 1 + 3 * random.Random(_seed(iid, "v", o_t.isoformat())).random()
             out.append(
-                Candle(iid, interval, o_t, c_t, D(round(pts[0])), D(round(max(pts))), D(round(min(pts))), D(round(pts[-1])),
+                Candle(iid, interval, o_t, c_t, D(round(pts[0], precision)), D(round(max(pts), precision)), D(round(min(pts), precision)), D(round(pts[-1], precision)),
                        D(round(vol, 4)), D(round(vol * pts[-1])), "DEMO")
             )
         return out
@@ -104,7 +117,7 @@ class DemoMarketData(MarketData):
         now = self.clock.now()
         out = []
         for i in instruments:
-            mid = D(round(self._price_at(i.instrument_id, now)))
+            mid = D(round(self._price_at(i.instrument_id, now), 2 if i.quote_ccy == "USD" else 0))
             tick = i.tick_for(mid)
             r = random.Random(_seed(i.instrument_id, "q", int(now.timestamp()) // 15))
             bid = (mid // tick) * tick

@@ -1,39 +1,52 @@
 {% extends "base.html" %}
+{% import "_ui.html" as ui %}
 {% block title %}주문 추적{% endblock %}
 {% block content %}
 {% set o = d.order %}
-<div class="card">
-  <h2>주문 {{ o.order_id }} · {{ o.instrument_id }} · {{ '매수' if o.side=='buy' else '매도' }} · {{ o.status|label('status') }}</h2>
-  <p class="small">장부 {{ o.book_id|label('book') }} · 계좌 {{ o.account_id }} · 거래소 {{ o.broker }} · 거래소 주문ID {{ o.broker_order_id or '-' }} ·
-    지정가 {{ o.limit_price|num(4) }} · 수량 {{ o.qty|num }} · 체결 {{ o.filled_qty|num }} · 체결금액 {{ o.filled_amount|num(2) }} · 수수료 {{ o.fees|num(4) }}</p>
-  <p class="small muted">생성 {{ o.created_at|kst }} · 전송시도 {{ o.submit_attempted_at|kst }} · 접수 {{ o.submitted_at|kst }} · TTL {{ o.ttl_expires_at|kst }} ·
-    취소요청 {{ o.cancel_requested_at|kst }} · 불명 시작 {{ o.unknown_since|kst }} · 조회 {{ o.lookup_attempts }}회 · 오류 {{ o.last_error or '-' }}</p>
+<div class="page-head">
+  <div class="grow">
+    <p class="small"><a href="/orders">← 주문·대사</a></p>
+    <h1>{{ o.instrument_id }} {{ ui.side(o.side) }} {{ ui.order_status(o.status) }}</h1>
+    <p class="sub">주문 {{ o.order_id }} · 장부 {{ o.book_id|label('book') }}</p>
+  </div>
 </div>
-<div class="grid">
-<div class="card"><h2>① 데이터 스냅샷</h2>
-  {% for s in d.snapshots %}<p class="small">{{ s.snapshot_id }}<br>생성 {{ s.created_at|kst }} · 완성봉 {{ s.candle_close_time|kst }}</p>{% else %}<p class="muted small">(청산·기준선 주문 등 스냅샷 없음)</p>{% endfor %}</div>
-<div class="card"><h2>② 제안</h2>
-  {% for p in d.proposals %}<p class="small"><b>{{ p.strategy_id|label('strategy') }}</b> {{ p.action|label('action') }} 목표 {{ p.target_weight }} — {{ p.rationale }}<br>
-    <span class="muted">{{ p.status }} · {{ p.decision_reason }} · 만료 {{ p.expires_at|kst }}</span></p>{% else %}<p class="muted small">연결된 제안 없음</p>{% endfor %}</div>
-<div class="card"><h2>③ 위험검사·예약</h2>
-  {% if d.intent %}<p class="small">의도 {{ d.intent.intent_id }} · {{ d.intent.status }} · 위험증가 {{ '예' if d.intent.risk_increasing else '아니오' }} · 원화환산 {{ d.intent.notional_krw|krw }}</p>{% endif %}
-  {% if d.risk_reasons %}<p class="bad small">{{ d.risk_reasons|join(' / ') }}</p>{% endif %}
-  {% if d.reservation %}<p class="small">예약 {{ d.reservation.kind }} {{ d.reservation.asset }} {{ d.reservation.amount_initial|num(2) }} → 잔여 {{ d.reservation.amount_remaining|num(2) }} ({{ d.reservation.status }})</p>{% endif %}
-  <p class="small">전략 배분: {% for a in d.alloc %}<span class="chip">{{ a.strategy_id|label('strategy') }} {{ a.requested_qty|num }}</span>{% endfor %}</p></div>
+
+<section class="card">
+  <dl class="kv">
+    <dt>계좌 · 거래소</dt><dd>{{ o.account_id }} · {{ o.broker }} · 거래소 주문ID {{ o.broker_order_id or '-' }}</dd>
+    <dt>지정가 · 수량</dt><dd>{{ o.limit_price|num(4) }} × {{ o.qty|num }}</dd>
+    <dt>체결</dt><dd>{{ o.filled_qty|num }} · 체결금액 {{ o.filled_amount|num(2) }} · 수수료 {{ o.fees|num(4) }}</dd>
+    <dt>시각</dt><dd>생성 {{ o.created_at|kst }} · 전송시도 {{ o.submit_attempted_at|kst }} · 접수 {{ o.submitted_at|kst }} · TTL {{ o.ttl_expires_at|kst }}</dd>
+    <dt>취소·불명</dt><dd>취소요청 {{ o.cancel_requested_at|kst }} · 불명 시작 {{ o.unknown_since|kst }} · 조회 {{ o.lookup_attempts }}회 · 오류 {{ o.last_error or '-' }}</dd>
+  </dl>
+</section>
+
+<div class="grid g3">
+  <section class="card"><div class="step-h"><span class="step-no">1</span><h2>① 데이터 스냅샷</h2></div>
+    {% for s in d.snapshots %}<p class="small">{{ s.snapshot_id }}<br>생성 {{ s.created_at|kst }} · 완성봉 {{ s.candle_close_time|kst }}</p>{% else %}<p class="muted small">(청산·기준선 주문 등 스냅샷 없음)</p>{% endfor %}</section>
+  <section class="card"><div class="step-h"><span class="step-no">2</span><h2>② 제안</h2></div>
+    {% for p in d.proposals %}<p class="small"><b>{{ p.strategy_id|label('strategy') }}</b> {{ ui.action(p.action) }} 목표 {{ p.target_weight }} — {{ p.rationale }}<br>
+      <span class="muted">{{ p.status }} · {{ p.decision_reason }} · 만료 {{ p.expires_at|kst }}</span></p>{% else %}<p class="muted small">연결된 제안 없음</p>{% endfor %}</section>
+  <section class="card"><div class="step-h"><span class="step-no">3</span><h2>③ 위험검사·예약</h2></div>
+    {% if d.intent %}<p class="small">의도 {{ d.intent.intent_id }} · {{ d.intent.status }} · 위험증가 {{ '예' if d.intent.risk_increasing else '아니오' }} · 원화환산 {{ d.intent.notional_krw|krw }}</p>{% endif %}
+    {% if d.risk_reasons %}<p class="bad small">{{ d.risk_reasons|join(' / ') }}</p>{% endif %}
+    {% if d.reservation %}<p class="small">예약 {{ d.reservation.kind }} {{ d.reservation.asset }} {{ d.reservation.amount_initial|num(2) }} → 잔여 {{ d.reservation.amount_remaining|num(2) }} ({{ d.reservation.status }})</p>{% endif %}
+    <p class="small">전략 배분: {% for a in d.alloc %}<span class="badge">{{ a.strategy_id|label('strategy') }} {{ a.requested_qty|num }}</span>{% endfor %}</p></section>
 </div>
-<div class="card"><h2>④ 상태 변화</h2>
-  <table><tr><th>시각</th><th>이전</th><th>이후</th><th>내용</th></tr>
-  {% for e in d.events %}<tr><td>{{ e.ts|kst }}</td><td>{{ (e.from_status or '-')|label('status') }}</td><td>{{ e.to_status|label('status') }}</td><td class="small">{{ e.detail }}</td></tr>{% endfor %}
-  </table></div>
-<div class="card"><h2>⑤ 체결</h2>
-  <table><tr><th>시각</th><th>체결 키</th><th class="n">수량</th><th class="n">가격</th><th class="n">수수료</th><th>출처</th></tr>
-  {% for f in d.fills %}<tr><td>{{ f.ts|kst }}</td><td class="small">{{ f.fill_key }}</td><td class="n">{{ f.qty|num }}</td><td class="n">{{ f.price|num(4) }}</td>
+
+<section class="card" style="margin-top:14px"><div class="step-h"><span class="step-no">4</span><h2>④ 상태 변화</h2></div>
+  <div class="tbl-wrap" style="margin-top:8px"><table><tr><th>시각</th><th>이전</th><th>이후</th><th>내용</th></tr>
+  {% for e in d.events %}<tr><td class="nowrap">{{ e.ts|kst }}</td><td>{{ (e.from_status or '-')|label('status') }}</td><td>{{ ui.order_status(e.to_status) }}</td><td class="small">{{ e.detail }}</td></tr>{% endfor %}
+  </table></div></section>
+<section class="card"><div class="step-h"><span class="step-no">5</span><h2>⑤ 체결</h2></div>
+  <div class="tbl-wrap" style="margin-top:8px"><table><tr><th>시각</th><th>체결 키</th><th class="n">수량</th><th class="n">가격</th><th class="n">수수료</th><th>출처</th></tr>
+  {% for f in d.fills %}<tr><td class="nowrap">{{ f.ts|kst }}</td><td class="small">{{ f.fill_key }}</td><td class="n">{{ f.qty|num }}</td><td class="n">{{ f.price|num(4) }}</td>
     <td class="n">{{ f.fee|num(4) }}{% if f.fee_estimated %}<span class="warn">(추정)</span>{% endif %}</td><td>{{ f.source }}</td></tr>
-  {% else %}<tr><td colspan="6" class="muted">체결 없음</td></tr>{% endfor %}
-  </table></div>
-<div class="card"><h2>⑥ 원장 반영</h2>
-  <table><tr><th>시각</th><th>종류</th><th>전략</th><th>자산</th><th class="n">변화</th><th class="n">가격</th></tr>
-  {% for l in d.ledger %}<tr><td>{{ l.ts|kst }}</td><td>{{ l.kind }}</td><td>{{ l.strategy_id|label('strategy') }}</td><td>{{ l.asset }}</td><td class="n">{{ l.delta|num(6) }}</td><td class="n">{{ l.price|num(4) }}</td></tr>
-  {% else %}<tr><td colspan="6" class="muted">없음</td></tr>{% endfor %}
-  </table></div>
+  {% else %}<tr><td colspan="6" class="empty">체결 없음</td></tr>{% endfor %}
+  </table></div></section>
+<section class="card"><div class="step-h"><span class="step-no">6</span><h2>⑥ 원장 반영</h2></div>
+  <div class="tbl-wrap" style="margin-top:8px"><table><tr><th>시각</th><th>종류</th><th>전략</th><th>자산</th><th class="n">변화</th><th class="n">가격</th></tr>
+  {% for l in d.ledger %}<tr><td class="nowrap">{{ l.ts|kst }}</td><td>{{ l.kind }}</td><td>{{ l.strategy_id|label('strategy') }}</td><td>{{ l.asset }}</td><td class="n">{{ l.delta|num(6) }}</td><td class="n">{{ l.price|num(4) }}</td></tr>
+  {% else %}<tr><td colspan="6" class="empty">없음</td></tr>{% endfor %}
+  </table></div></section>
 {% endblock %}

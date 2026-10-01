@@ -17,7 +17,7 @@ from aifund.core.ids import new_id
 from aifund.core.money import D
 from aifund.core.timeutil import to_iso
 from aifund.db.database import dumps, loads
-from aifund.evaluation.backtest import run_backtest
+from aifund.evaluation.backtest import run_backtest, side_fee_rate
 from aifund.evaluation.metrics import strategy_metrics_payload
 from aifund.service.context import AppContext
 from aifund.strategies import mean_reversion, trend  # noqa: F401  (전략 등록)
@@ -97,7 +97,12 @@ def backtest_candidate(ctx: AppContext, candidate_id: str, market: str = "crypto
     if not candles:
         raise RuntimeError("저장된 캔들이 없습니다. `aifund backtest --fetch`로 먼저 수집하세요.")
     cap = ms.allocation_krw * s.strategies.sleeves.get(row["strategy_id"], D("0.5"))
-    fee = s.execution.paper.fee_rate
+    if next(iter(insts.values())).quote_ccy != "KRW":
+        fx = ctx.fx.status(s.risk.max_fx_age_hours)
+        if not fx.fresh or fx.rate is None:
+            raise RuntimeError(f"환율이 없어 외화 자본을 계산할 수 없습니다: {fx.reason}")
+        cap = cap / fx.rate.rate
+    fee = side_fee_rate(s.execution.paper, market)
     base = REGISTRY[row["strategy_id"]](loads(row["base_params_json"]))
     cand = REGISTRY[row["strategy_id"]](loads(row["params_json"]))
     result = {

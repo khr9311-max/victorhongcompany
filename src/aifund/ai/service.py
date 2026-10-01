@@ -1,6 +1,7 @@
 """연구 AI·검증 AI 운영.
 
-호출 빈도(기본): 자료 요약·제안 하루 1회, 급변 이벤트 시 제한된 추가 검토, 전략 검토 주 1회.
+호출 빈도(기본): 자료 요약·제안은 시장별 정기 연구 시각마다(코인 N시간마다, 주식 개장 전 1회),
+급변 이벤트 시 제한된 추가 검토, 전략 검토 주 1회.
 실패(잘못된 JSON, 미지원 종목, 근거 없는 숫자, 타임아웃, 예산 초과, 거절)는 모두 기록하고 신규 AI 제안을 보류한다.
 기존 포지션의 위험관리·주문 상태 확인은 AI와 무관하게 계속된다.
 """
@@ -13,7 +14,7 @@ import json
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import timedelta
+from datetime import datetime, timedelta
 from decimal import Decimal
 from importlib import resources
 from typing import Any
@@ -30,6 +31,7 @@ from aifund.core.ids import new_id
 from aifund.core.money import D
 from aifund.core.timeutil import KST, Clock, parse_iso, to_iso
 from aifund.data.collector import Snapshot
+from aifund.markets.calendar import session_info
 from aifund.data.news import NewsCollector
 from aifund.db.database import Database, dumps, loads
 from aifund.domain.models import Action
@@ -47,6 +49,16 @@ PROMPT_VERSIONS = {
 
 def load_prompt(name: str) -> str:
     return resources.files("aifund.ai.prompts").joinpath(f"{name}.md").read_text(encoding="utf-8")
+
+
+# 공급자별로 확실히 다른 회사의 모델 이름(설정 화면에서 공급자만 바꾸고 모델을 그대로 둔 경우 등)
+_FOREIGN_MODEL_PREFIXES = {"anthropic": ("gemini-", "gemma-"), "gemini": ("claude-",)}
+
+
+def provider_model_mismatch(provider: str, model: str) -> str | None:
+    if model.lower().startswith(_FOREIGN_MODEL_PREFIXES.get(provider, ())):
+        return f"공급자·모델 불일치({provider} / {model}) → 설정에서 모델을 공급자에 맞게 바꾸세요"
+    return None
 
 
 @dataclass
@@ -92,6 +104,9 @@ class AIService:
         extra = self.unavailable_reason_fn()
         if extra:
             return False, extra
+        mismatch = provider_model_mismatch(s.provider, s.model)
+        if mismatch:
+            return False, mismatch
         provider = self.provider_fn()
         if provider is None:
             return False, "AI 공급자 미설정(API 키 없음 등)"
@@ -132,15 +147,15 @@ class AIService:
         if provider is None:
             record("skipped", error=reason)
             return CallOutcome(run_id, "skipped", None, [reason], Decimal(0))
-        schema = transform_schema(model_cls)
+        schema = transform_schema(model_cls) if provider.name == "anthropic" else model_cls.model_json_schema()
         budget = self.budget_fn()
         budget_id = None
         if provider.is_paid:
             tokens = await provider.count_tokens(system, user, schema)
             if tokens is None:
-                tokens = len(system) + len(user) + 2000  # 보수적 추정(문자당 1토큰 이상)
+                tokens = len((system + user + json.dumps(schema, ensure_ascii=False)).encode("utf-8")) + 2000
             try:
-                est = budget.estimate_usd(provider.model, tokens, s.max_output_tokens, s.use_server_fallbacks)
+                est = budget.estimate_usd(provider.model, tokens, s.max_output_tokens, s.use_server_fallbacks and provider.name == "anthropic")
                 budget_id = budget.reserve(est, run_id)
             except (BudgetExceeded, PricingMissing) as exc:
                 record("skipped_budget", error=str(exc))
@@ -189,16 +204,19 @@ class AIService:
     # ------------------------------------------------------------ 연구
     def costs_payload(self, snapshot: Snapshot) -> dict[str, Any]:
         s = self.settings_fn()
-        fee = s.execution.paper.fee_rate if snapshot.market == "crypto" else s.execution.paper.stock_fee_rate
+        fee = {"crypto": s.execution.paper.fee_rate, "kr_stock": s.execution.paper.stock_fee_rate,
+               "us_stock": s.execution.paper.us_fee_rate}[snapshot.market]
         return {"fee_rate_each_side": str(fee), "note": "스프레드는 price_facts.spread_pct 참고. 최소 주문 금액 존재.",
                 "ai_sleeve_weight": str(s.strategies.sleeves.get("ai_research", 0))}
 
     async def research(self, market: str, snapshot: Snapshot, signals: list[dict[str, Any]], trigger: str) -> str | None:
         async with self._lock:
-            news = self.news.recent(market)
-            bundle = build_bundle(snapshot, signals, news, self.costs_payload(snapshot), self.clock.now(),
-                                  [f"트리거: {trigger}"])
             s = self.settings_fn().ai
+            news = self.news.recent(market, limit=s.max_news_items)
+            status = [f"트리거: {trigger}"]
+            if s.research_focus.strip():
+                status.append(f"대표의 연구 관심사: {s.research_focus.strip()}")
+            bundle = build_bundle(snapshot, signals, news, self.costs_payload(snapshot), self.clock.now(), status)
             user = bundle.to_user_text(s.max_input_chars, {"phase": "research", "task": "시장 요약·전략 유효조건·신중한 제안"})
             out = await self._call(role="research", market=market, snapshot_id=snapshot.snapshot_id,
                                    system=load_prompt(PROMPT_VERSIONS["research"]), user=user, model_cls=S.ResearchReport,
@@ -285,23 +303,53 @@ class AIService:
         now_k = self.clock.now().astimezone(KST)
         return to_iso(now_k.replace(hour=0, minute=0, second=0, microsecond=0))  # type: ignore[return-value]
 
-    def due_daily(self, market: str) -> bool:
-        """하루 1회. 실패하면 1시간 뒤 1회만 재시도, AI 불가(skipped)면 6시간 간격으로만 재확인."""
-        s = self.settings_fn().ai
-        now_k = self.clock.now().astimezone(KST)
-        h, m = map(int, s.daily_research_time_kst.split(":"))
-        if (now_k.hour, now_k.minute) < (h, m):
+    def research_slot(self, market: str) -> tuple[datetime, timedelta] | None:
+        """지금 적용되는 정기 연구 시각과 그 구간 길이. 없으면 None.
+
+        코인: daily_research_time_kst부터 crypto_research_interval_hours마다.
+        주식: 거래일 정규장 시작 stock_research_lead_min분 전 ~ 장 시작 후 판단 시각 + 2시간(그 뒤엔 다음 거래일).
+        """
+        s = self.settings_fn()
+        now = self.clock.now()
+        if market == "crypto":
+            h, m = map(int, s.ai.daily_research_time_kst.split(":"))
+            now_k = now.astimezone(KST)
+            anchor = now_k.replace(hour=h, minute=m, second=0, microsecond=0)
+            if anchor > now_k:
+                anchor -= timedelta(days=1)
+            step = timedelta(hours=s.ai.crypto_research_interval_hours)
+            return anchor + step * ((now_k - anchor) // step), step
+        sess = session_info(market, now)
+        if sess.session_open is None or not (sess.is_open or now < sess.session_open):
+            return None  # 휴장·장 마감 후 → 다음 거래일 개장 전까지 정기 연구 없음
+        start = sess.session_open - timedelta(minutes=s.ai.stock_research_lead_min)
+        end = sess.session_open + timedelta(minutes=s.markets[market].stock_decision_after_open_min, hours=2)  # type: ignore[index]
+        return (start, end - start) if start <= now <= end else None
+
+    def due_research(self, market: str) -> bool:
+        """정기 연구 시각마다 1회. 실패하면 1시간 뒤 1회만 재시도, AI 불가(skipped)면 구간당 최대 6시간 간격으로만 재확인."""
+        slot = self.research_slot(market)
+        if slot is None:
             return False
-        rows = self.db.query("SELECT status, started_at FROM ai_runs WHERE role='research' AND market=? AND trigger='daily' "
-                             "AND started_at>=?", (market, self._today_start()))
+        start, length = slot
+        rows = self.db.query("SELECT status, started_at FROM ai_runs WHERE role='research' AND market=? "
+                             "AND trigger IN ('scheduled','daily') AND started_at>=?", (market, to_iso(start)))
         attempts = [r for r in rows if r["status"] not in ("skipped", "skipped_budget")]
         if any(r["status"] == "ok" for r in attempts) or len(attempts) >= 2:
             return False
         last_any = max((parse_iso(r["started_at"]) for r in rows), default=None)
         if last_any is None:
             return True
-        gap = timedelta(hours=1) if attempts else timedelta(hours=6)
+        gap = timedelta(hours=1) if attempts else min(timedelta(hours=6), length)
         return self.clock.now() - last_any > gap  # type: ignore[operator]
+
+    def schedule_text(self, market: str) -> str:
+        """대시보드 표시용 정기 연구 규칙."""
+        s = self.settings_fn().ai
+        if market == "crypto":
+            n = s.crypto_research_interval_hours
+            return f"매일 {s.daily_research_time_kst}" if n == 24 else f"{s.daily_research_time_kst}부터 {n}시간마다"
+        return f"거래일 개장 {s.stock_research_lead_min}분 전"
 
     def event_calls_today(self, market: str) -> int:
         return int(self.db.scalar(

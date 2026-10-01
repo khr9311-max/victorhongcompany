@@ -40,6 +40,20 @@
 제약: 클라이언트 주문 ID 없음(응답 유실은 당일 주문조회 유일 매칭), 체결은 누적 수량·금액만(수수료 추정), 소수점 주식 주문·자동 환전은 가정하지 않음(보유 외화 안에서만 주문), 토큰 만료 코드 EGW00123/EGW00121·초당 제한 EGW00201은 관례상 코드로 처리(공식 표 재확인 권장).
 KRX 호가 단위: 2023-01-25 시행 표(KIS `aspr_unit`이 있으면 우선). 매도 세금·수수료율은 연도별로 바뀌므로 설정 `execution.paper.kr_sell_tax_rate`를 사용자가 확인.
 
+## 키움증권 REST API — 시세·계좌 조회 전용 (github.com/Kiwoom-Securities/Kiwoom-REST-API)
+
+도메인: 실전 `https://api.kiwoom.com`, 모의 `https://mockapi.kiwoom.com`(`KIWOOM_DATA_ENV`). 토큰 `POST /oauth2/token`(`expires_dt` KST 기준 만료, 메모리 재사용·만료 5분 전 갱신). 헤더 `authorization`·`api-id`·`cont-yn`·`next-key`(연속조회). 국내·미국 조회가 같은 클라이언트·토큰·호출 제한(앱키·환경별 2초에 1회)을 공유하고, HTTP 429·`return_code` 1700번대는 최대 2회 재시도합니다. 허용 목록 밖의 `api-id`(주문 TR 포함)는 전송 전에 차단합니다.
+
+| 기능 | api-id / 경로 | 비고 | 상태 |
+|---|---|---|---|
+| 국내 현재가·1호가 | `ka10007` `/api/dostk/mrkcond` | 가격 앞 부호(+/-) 제거. 응답 호가 시각의 시간대가 불명확해 수집 시각으로 신선도 판단 | mock 실호출 |
+| 국내 일봉 | `ka10081` `/api/dostk/chart` | 수정주가, XKRX 달력으로 봉 시각(UTC) 계산 | mock 실호출 |
+| 국내 예수금·보유 | `kt00001`, `kt00018` `/api/dostk/acnt` | `kiwoom-check --account` 표시용. 모의 원장에는 합산하지 않음 | mock 실호출 |
+| 미국 현재가·1호가 | `usa20101` `/api/us/mrkcond` | 거래소 NASD→ND, NYSE→NY, AMEX→NA. 응답 종목·거래소 불일치·호가 역전 시 오류 | mock 실호출 |
+| 미국 일봉 | `usa06012` `/api/us/chart` | `exrt_appl_tp=0`(USD 그대로), XNYS 달력 | mock 실호출 |
+
+제약: 일봉(`1d`)만 지원, 미국 계좌 조회·주문·송금 API 없음, 실전 서버는 미검증. live 모드에서 mock 환경 시세는 사용하지 않습니다(시장 '미연결'). 2026-09-29 mock 서버에서 HTTP 429가 반복된 실행 기록이 있으며, 이 경우 해당 주기 시세 조회만 실패로 표시되고 다음 주기에 다시 조회합니다.
+
 ## Anthropic Claude API (platform.claude.com)
 
 - SDK `anthropic` 1.9.0(httpx2 기반) — 설치본에서 `AsyncAnthropic`, `beta.messages.create(fallbacks=…, output_config=…)`, `messages.count_tokens`, `transform_schema`, `usage.iterations`(모델별 사용량) 시그니처 확인.
@@ -48,14 +62,33 @@ KRX 호가 단위: 2023-01-25 시행 표(KIS `aspr_unit`이 있으면 우선). �
 - 요율(2026-09-29 공식 가격표): Opus 5 $5/$25, Opus 4.8 $5/$25, Sonnet 5 $2/$10, Haiku 4.5 $1/$5 (입력/출력, 백만 토큰당). 기본 모델 `claude-opus-5`, effort `medium`.
 - 실제 API 호출은 키가 없어 **미검증**(가짜 HTTP로 요청 형식만 확인).
 
+## Google Gemini API (ai.google.dev)
+
+- REST `POST /v1beta/models/{model}:generateContent`, 키는 `x-goog-api-key` 헤더(URL에 넣지 않음). SDK 없이 httpx로 호출하며 도구·자동 재시도·모델 자동 대체 없음.
+- 구조화 출력: `generationConfig.responseMimeType=application/json` + `responseJsonSchema`(pydantic JSON 스키마) + 코드 측 pydantic·결정적 검증.
+- 사용량: `usageMetadata.promptTokenCount`(입력) + `candidatesTokenCount`+`thoughtsTokenCount`(출력으로 과금). 캐시 할인은 반영하지 않는 보수 계산. 사용량이 없으면 예약액으로 정산. `finishReason=MAX_TOKENS`는 잘린 응답, `SAFETY` 등·`promptFeedback.blockReason`은 거절로 처리.
+- 사전 토큰 계산 API는 쓰지 않고 입력·스키마 UTF-8 바이트 수 + 2,000으로 보수 추정해 예산을 예약.
+- 추론 강도: Gemini 3 계열에 `generationConfig.thinkingConfig.thinkingLevel`(low·medium·high, 설정 `ai.effort`에서 변환). 3.8 Flash는 minimal 미지원, 기본 medium. 2.5 이하 모델에는 보내지 않음.
+- 요율(공식 가격표 2026-09-24 갱신본, 2026-09-30 확인, 백만 토큰당 입력/출력): `gemini-3.8-flash` $0.75/$3.75(2026-12-31까지), **2027-01-01부터 $1.50/$7.50** — 설정의 `changes_on`으로 날짜에 맞춰 자동 계산. `gemini-3.5-flash-lite` $0.30/$2.50. 무료 티어도 이 요율로 기록. Google 검색 Grounding은 Gemini 3.x 공통 월 5,000회 무료 후 1,000회당 $14(이번 구현은 사용하지 않음).
+- 모델 상태(2026-09-30): `gemini-3.8-flash` 정식(2026-09-02 출시, 종료 일정 없음, 입력 1M·출력 64k), Pro는 `gemini-3.1-pro-preview`(미리보기)만 있음.
+- 이번 구현에 없는 것: Google 검색 Grounding, 연구·검증을 서로 다른 공급자로 나누는 설정.
+- 2026-09-29 `internal_paper` 실행에서 `gemini-3.5-flash-lite`로 연구·독립 평가·검증 호출 성공(시장별 1세트, 호출당 약 7~11원) — **확인(실호출)**. `gemini-3.8-flash`는 요청 형식만 테스트로 확인(실호출 전).
+
+## 네이버 뉴스 검색 API (developers.naver.com)
+
+- `GET https://openapi.naver.com/v1/search/news.json`, 헤더 `X-Naver-Client-Id`·`X-Naver-Client-Secret`, `sort=date`, `display` 최대 100. 무료 하루 25,000회.
+- 시장별 검색어(`news.naver_queries`, 최대 10개)마다 뉴스 수집 주기(기본 60분)에 1회 호출. 제목·요약은 태그·HTML 엔티티·제어문자를 제거하고, `originallink`(없으면 `link`)가 http/https일 때만 저장. 같은 시장의 같은 URL은 한 번만 저장.
+- 실패는 상태 코드만 기록(응답 본문·키 미저장). 2026-09-29 실행에서 3개 시장 312건 수집 — **확인(실호출)**.
+
 ## 기타
 
 | 대상 | 내용 | 상태 |
 |---|---|---|
 | 환율 | Frankfurter `https://api.frankfurter.dev/v1/latest?base=USD&symbols=KRW` (ECB 기준환율, 무료·키 없음, 영업일 1회 → 주말 3일 이상 지연 정상). 수동 입력 가능. 출처·기준시각·수집시각 기록 | 확인(실호출) |
 | 거래 달력 | `exchange_calendars` 4.13.2 XKRX·XNYS (추석·추수감사절·조기폐장·서머타임 테스트) | 확인 |
-| 뉴스 | CoinDesk RSS(기본, 무료). 사용자가 피드 추가 가능. 실패는 '자료 없음'으로 명시 | 설정만(리다이렉트 응답 확인) |
+| 뉴스(RSS) | CoinDesk RSS(기본, 무료). 사용자가 피드 추가 가능. 실패는 '자료 없음'으로 명시 | 확인(실행 기록에 수집 항목 있음) |
 | 공시 | DART `opendart.fss.or.kr/api/list.json`(키 필요, 선택) | 미검증 |
 | 로컬 모델 | Ollama `/api/chat`(format=JSON 스키마, 선택) | 미검증 |
 | 알림 | 텔레그램 봇 `sendMessage`, 일반 웹훅 POST — 본인 수신처 설정 시에만 | 미검증 |
-| 키움 / 바이낸스 | 기존 연결 코드가 없어 구현하지 않음. 선물·COIN-M은 초기 LIVE 대상 아님 | 범위 외 |
+| 바이낸스 | 기존 연결 코드가 없어 구현하지 않음. 선물·COIN-M은 초기 LIVE 대상 아님 | 범위 외 |
+| 키움 주문 | 조회 전용으로만 연결(위 키움 절). 키움 실주문·공식 모의주문은 구현하지 않음 | 범위 외 |

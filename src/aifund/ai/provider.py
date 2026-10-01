@@ -3,6 +3,7 @@
 - AnthropicProvider: 공식 anthropic SDK(AsyncAnthropic). 구조화 출력(output_config.format=json_schema),
   사전 토큰 계산(messages.count_tokens), 거절 시 서버측 폴백(fallbacks="default").
   사용량은 usage.iterations(모델별)로 정산한다.
+- GeminiProvider(ai/gemini.py): Google Gemini REST generateContent. 사전 토큰 계산 없이 보수 추정으로 예약한다.
 - OllamaProvider: 로컬 모델(선택). 비용 0. 이 개발 환경에서는 미검증.
 - DemoProvider: offline_demo/테스트용 결정적 가짜 응답(명시적으로 [데모] 표시).
 AI 제공자에는 주문·쉘·설정 변경 권한이 없다(도구 미제공, JSON 텍스트만 반환).

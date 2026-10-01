@@ -60,13 +60,28 @@ class KisCreds:
     env: str  # "real" | "demo"
 
 
+@dataclass(frozen=True, repr=False)
+class KiwoomCreds:
+    app_key: str
+    app_secret: str
+    env: str
+
+    def __post_init__(self):
+        if self.env not in ("mock", "real"):
+            raise ValueError("키움 환경은 mock 또는 real이어야 합니다")
+
+
 @dataclass(frozen=True)
 class ModeSecrets:
     mode: str
     upbit: UpbitCreds | None = None
     kis_trade: KisCreds | None = None
     kis_data: KisCreds | None = None
+    kiwoom_data: KiwoomCreds | None = None
     anthropic_api_key: str | None = None
+    gemini_api_key: str | None = None
+    naver_client_id: str | None = None
+    naver_client_secret: str | None = None
     admin_token: str | None = None
     telegram_bot_token: str | None = None
     telegram_chat_id: str | None = None
@@ -84,7 +99,10 @@ class ModeSecrets:
             "업비트 주문 키": s(self.upbit),
             "KIS 주문 키": s(self.kis_trade),
             "KIS 시세 키": s(self.kis_data),
+            "키움 조회 키": s(self.kiwoom_data),
             "Anthropic API 키": s(self.anthropic_api_key),
+            "Gemini API 키": s(self.gemini_api_key),
+            "네이버 뉴스 키": s(self.naver_client_id and self.naver_client_secret),
             "관리자 토큰": s(self.admin_token),
             "텔레그램 알림": s(self.telegram_bot_token and self.telegram_chat_id),
             "웹훅 알림": s(self.webhook_url),
@@ -117,13 +135,26 @@ def load_mode_secrets(mode: str) -> ModeSecrets:
     if mode != "offline_demo":
         # 시세 조회 전용 키(주문 권한과 무관). 없으면 live/sandbox 키를 시세에만 재사용.
         kis_data = _kis("KIS_DATA", "real") or (kis_trade if kis_trade and kis_trade.env == "real" else None)
+    kiwoom_data = None
+    if mode != "offline_demo":
+        key, secret = _env("KIWOOM_DATA_APP_KEY"), _env("KIWOOM_DATA_APP_SECRET")
+        env = (os.environ.get("KIWOOM_DATA_ENV") or "mock").strip().lower()
+        if key and secret:
+            # 환경 값은 키움 키가 있을 때만 검사한다(비워 두면 mock).
+            if env not in ("mock", "real"):
+                raise ValueError("KIWOOM_DATA_ENV는 mock 또는 real이어야 합니다")
+            kiwoom_data = KiwoomCreds(key, secret, env)
     anthropic_key = _env("ANTHROPIC_API_KEY") if mode != "offline_demo" else None
     return ModeSecrets(
         mode=mode,
         upbit=upbit,
         kis_trade=kis_trade,
         kis_data=kis_data,
+        kiwoom_data=kiwoom_data,
         anthropic_api_key=anthropic_key,
+        gemini_api_key=_env("GEMINI_API_KEY") if mode != "offline_demo" else None,
+        naver_client_id=_env("NAVER_CLIENT_ID") if mode != "offline_demo" else None,
+        naver_client_secret=_env("NAVER_CLIENT_SECRET") if mode != "offline_demo" else None,
         admin_token=_env("AIFUND_ADMIN_TOKEN"),
         telegram_bot_token=_env("AIFUND_TELEGRAM_BOT_TOKEN"),
         telegram_chat_id=os.environ.get("AIFUND_TELEGRAM_CHAT_ID") or None,

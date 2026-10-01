@@ -171,7 +171,12 @@ class Runtime:
                 continue
             insts = [i for i in (ctx.market_store.instrument(f"{market}:{s}") for s in ctx.settings.markets[market].instruments) if i]  # type: ignore[index]
             if insts:
-                ctx.market_store.save_quotes(await mr.data.quotes(insts))
+                try:
+                    ctx.market_store.save_quotes(await mr.data.quotes(insts))
+                    self.errors.pop(f"quotes:{market}", None)
+                except Exception as exc:
+                    self.errors[f"quotes:{market}"] = str(exc)
+                    log.warning("시세 조회 실패(%s): %s", market, exc)
 
     async def poll_orders(self) -> None:
         for ex in self.ctx.all_executors():
@@ -191,6 +196,12 @@ class Runtime:
         ctx = self.ctx
         if ctx.mode == "offline_demo":
             return
+        if ctx.settings.news.naver_enabled and ctx.secrets.naver_client_id and ctx.secrets.naver_client_secret:
+            for market, queries in ctx.settings.news.naver_queries.items():
+                if ctx.settings.markets[market].enabled:
+                    for query in queries[:10]:
+                        await ctx.news.fetch_naver(ctx.secrets.naver_client_id, ctx.secrets.naver_client_secret,
+                                                   query, market, ctx.settings.news.max_items_per_feed)
         for feed in ctx.settings.news.feeds:
             if feed.enabled and any(ctx.settings.markets[m].enabled for m in feed.markets):  # type: ignore[index]
                 await ctx.news.fetch_feed(feed, ctx.settings.news.max_items_per_feed)
@@ -334,9 +345,22 @@ class Runtime:
 
     async def ai_tick(self) -> None:
         ctx = self.ctx
-        for market, mr in ctx.markets.items():
-            if mr.collector is not None and ctx.ai.due_daily(market):
-                await self.run_research(market, "daily")
+        # 예산이 빠듯해도 항상 첫 시장만 연구하지 않도록 가장 오래 연구하지 않은 시장부터 처리한다.
+        def last_research(market):
+            return ctx.db.scalar("SELECT MAX(created_at) FROM ai_reports WHERE market=? AND role='research' AND valid=1",
+                                 (market,)) or ""
+
+        for market in sorted(ctx.markets, key=last_research):
+            mr = ctx.markets[market]
+            if not ctx.settings.markets[market].enabled:
+                continue
+            if mr.collector is not None and ctx.ai.due_research(market):
+                try:
+                    await self.run_research(market, "scheduled")
+                    self.errors.pop(f"ai:{market}", None)
+                except Exception as exc:
+                    self.errors[f"ai:{market}"] = str(exc)
+                    log.warning("AI 연구 실패(%s): %s", market, exc)
         if ctx.ai.due_weekly():
             from aifund.evaluation.candidates import run_weekly_review
 

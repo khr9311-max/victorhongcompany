@@ -1,36 +1,52 @@
 {% extends "base.html" %}
+{% import "_ui.html" as ui %}
 {% block title %}주문·대사{% endblock %}
 {% block content %}
-<div class="card">
-  <h2>주문 흐름 {% if d.book %}· {{ d.book|label('book') }}{% endif %}</h2>
-  <p class="small">장부: <a href="/orders">전체</a> · <a href="/orders?book=operating">운용</a> · <a href="/orders?book=shadow_A">A</a> · <a href="/orders?book=shadow_B">B</a> · <a href="/orders?book=shadow_C">C</a> · <a href="/orders?book=baseline_bh">매수·보유</a></p>
-  <table><tr><th>생성</th><th>장부</th><th>종목</th><th>방향</th><th class="n">지정가</th><th class="n">수량</th><th class="n">체결</th><th class="n">수수료</th><th>상태</th><th>용도</th><th>거래소 ID</th></tr>
+<div class="page-head">
+  <div class="grow">
+    <h1>주문·대사</h1>
+    <p class="sub">모든 주문은 중앙 주문 실행기 한 곳을 거칩니다. 종목을 누르면 제안부터 원장 반영까지 추적합니다.</p>
+  </div>
+</div>
+
+<section class="card">
+  <div class="card-head">
+    <h2 class="grow">주문 흐름{% if d.book %} · {{ d.book|label('book') }}{% endif %}</h2>
+    <nav class="segmented" aria-label="장부 선택">
+      {% for key, text in [(None, '전체'), ('operating', '운용'), ('shadow_A', 'A'), ('shadow_B', 'B'), ('shadow_C', 'C'), ('baseline_bh', '매수·보유')] %}
+      <a href="/orders{{ '?book=' ~ key if key }}" class="{{ 'active' if d.book == key }}">{{ text }}</a>{% endfor %}
+    </nav>
+  </div>
+  <div class="tbl-wrap"><table><tr><th>생성</th><th>장부</th><th>종목</th><th>방향</th><th class="n">지정가</th><th class="n">수량</th><th class="n">체결</th><th class="n">수수료</th><th>상태</th><th>용도</th><th>거래소 ID</th></tr>
   {% for o in d.orders %}
-  <tr><td>{{ o.created_at|kst }}</td><td>{{ o.book_id|label('book') }}</td><td><a href="/orders/{{ o.order_id }}">{{ o.instrument_id }}</a></td>
-    <td>{{ '매수' if o.side=='buy' else '매도' }}</td><td class="n">{{ o.limit_price|num(4) }}</td><td class="n">{{ o.qty|num }}</td>
+  <tr><td class="nowrap">{{ o.created_at|kst }}</td><td class="nowrap">{{ o.book_id|label('book') }}</td><td class="nowrap"><a href="/orders/{{ o.order_id }}">{{ o.instrument_id }}</a></td>
+    <td>{{ ui.side(o.side) }}</td><td class="n">{{ o.limit_price|num(4) }}</td><td class="n">{{ o.qty|num }}</td>
     <td class="n">{{ o.filled_qty|num }}</td><td class="n">{{ o.fees|num(2) }}</td>
-    <td class="{{ 'bad' if o.status in ('unknown','rejected') else 'warn' if o.status in ('cancel_pending','partially_filled') else '' }}">{{ o.status|label('status') }}</td>
-    <td>{{ o.purpose }}</td><td class="small muted">{{ (o.broker_order_id or '-')[:18] }}</td></tr>
-  {% else %}<tr><td colspan="11" class="muted">없음</td></tr>{% endfor %}
-  </table>
-</div>
+    <td>{{ ui.order_status(o.status) }}</td>
+    <td class="nowrap">{{ o.purpose|label('purpose') }}</td><td class="small muted">{{ (o.broker_order_id or '-')[:18] }}</td></tr>
+  {% else %}<tr><td colspan="11" class="empty">없음</td></tr>{% endfor %}
+  </table></div>
+</section>
 
-<div class="card">
-  <h2>잔고 대사</h2>
-  {% if sess %}<form class="inline" method="post" action="/control/reconcile"><input type="hidden" name="csrf" value="{{ csrf }}"><button>지금 대사</button></form>{% endif %}
-  <table><tr><th>시각</th><th>계좌</th><th>결과</th><th>불일치</th><th>메모</th></tr>
-  {% for r in d.recon %}<tr><td>{{ r.ts|kst }}</td><td>{{ r.account_id }}</td><td class="{{ 'ok' if r.ok else 'bad' }}">{{ '일치' if r.ok else '불일치' }}</td>
-    <td class="small">{{ r.mismatches|join(' / ') }}</td><td class="small muted">{{ r.detail.reason }} {{ r.detail.notes|join(' / ') if r.detail.notes else '' }}</td></tr>
-  {% else %}<tr><td colspan="5" class="muted">기록 없음</td></tr>{% endfor %}
-  </table>
-</div>
-
-<div class="card">
-  <h2>위험검사·예약에서 거부된 주문 의도</h2>
-  <table><tr><th>시각</th><th>장부</th><th>종목</th><th>방향</th><th class="n">수량</th><th>사유</th></tr>
-  {% for i in d.rejected_intents %}<tr><td>{{ i.created_at|kst }}</td><td>{{ i.book_id|label('book') }}</td><td>{{ i.instrument_id }}</td><td>{{ i.side }}</td>
-    <td class="n">{{ i.qty|num }}</td><td class="small">{{ i.reasons|join(' / ') }}</td></tr>
-  {% else %}<tr><td colspan="6" class="muted">없음</td></tr>{% endfor %}
-  </table>
+<div class="grid g2">
+  <section class="card">
+    <div class="card-head"><div class="grow"><h2>잔고 대사</h2><p class="sub">거래소(또는 모의 계좌) 잔고·미체결과 봇 원장을 맞춰 봅니다. 불일치면 신규 주문이 막힙니다.</p></div>
+      {% if sess %}<form class="inline" method="post" action="/control/reconcile"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="secondary small">지금 대사</button></form>{% endif %}</div>
+    <div class="tbl-wrap"><table><tr><th>시각</th><th>계좌</th><th>결과</th><th>불일치</th><th>메모</th></tr>
+    {% for r in d.recon %}<tr><td class="nowrap">{{ r.ts|kst }}</td><td class="small">{{ r.account_id }}</td>
+      <td>{% if r.ok %}{{ ui.st('good', '일치') }}{% else %}{{ ui.st('critical', '불일치') }}{% endif %}</td>
+      <td class="small">{{ r.mismatches|join(' / ') }}</td><td class="small muted">{{ r.detail.reason }} {{ r.detail.notes|join(' / ') if r.detail.notes else '' }}</td></tr>
+    {% else %}<tr><td colspan="5" class="empty">기록 없음</td></tr>{% endfor %}
+    </table></div>
+  </section>
+  <section class="card">
+    <h2>위험검사·예약에서 거부된 주문 의도</h2>
+    <p class="sub">한도·데이터 신선도·장 운영 등 결정적 규칙에서 막힌 주문입니다.</p>
+    <div class="tbl-wrap" style="margin-top:8px"><table><tr><th>시각</th><th>장부</th><th>종목</th><th>방향</th><th class="n">수량</th><th>사유</th></tr>
+    {% for i in d.rejected_intents %}<tr><td class="nowrap">{{ i.created_at|kst }}</td><td class="nowrap">{{ i.book_id|label('book') }}</td><td class="nowrap">{{ i.instrument_id }}</td><td>{{ ui.side(i.side) }}</td>
+      <td class="n">{{ i.qty|num }}</td><td class="small">{{ i.reasons|join(' / ') }}</td></tr>
+    {% else %}<tr><td colspan="6" class="empty">없음</td></tr>{% endfor %}
+    </table></div>
+  </section>
 </div>
 {% endblock %}

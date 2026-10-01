@@ -45,6 +45,7 @@ class BookValuation:
     by_class: dict[str, Decimal] = field(default_factory=dict)
     by_strategy: dict[str, dict[str, Decimal]] = field(default_factory=dict)
     stale: list[str] = field(default_factory=list)
+    by_market_strategy: dict[str, dict[str, dict[str, Decimal]]] = field(default_factory=dict)
 
 
 def value_book(db: Database, ledger: Ledger, book_id: str, price_fn: PriceFn, inst_fn: InstFn, fx: FxService,
@@ -64,6 +65,7 @@ def value_book(db: Database, ledger: Ledger, book_id: str, price_fn: PriceFn, in
     by_market: dict[str, Decimal] = {}
     by_class: dict[str, Decimal] = {}
     by_strat: dict[str, dict[str, Decimal]] = {}
+    by_market_strat: dict[str, dict[str, dict[str, Decimal]]] = {}
     realized = ZERO
     unreal = ZERO
     fees = ZERO
@@ -78,6 +80,9 @@ def value_book(db: Database, ledger: Ledger, book_id: str, price_fn: PriceFn, in
         s = by_strat.setdefault(p.strategy_id, {"value": ZERO, "realized": ZERO, "unrealized": ZERO, "fees": ZERO, "cost": ZERO})
         s["realized"] += realized_k
         s["fees"] += fees_k
+        mk = inst.market if inst else p.instrument_id.split(":")[0]
+        ms = by_market_strat.setdefault(mk, {}).setdefault(p.strategy_id, {"realized": ZERO, "unrealized": ZERO})
+        ms["realized"] += realized_k
         if p.qty == 0:
             continue
         px = price_fn(p.instrument_id)
@@ -88,6 +93,7 @@ def value_book(db: Database, ledger: Ledger, book_id: str, price_fn: PriceFn, in
         cost = krw(p.cost_basis, ccy)
         positions_krw += value
         unreal += value - cost
+        ms["unrealized"] += value - cost
         by_inst[p.instrument_id] = by_inst.get(p.instrument_id, ZERO) + value
         mk = inst.market if inst else p.instrument_id.split(":")[0]
         by_market[mk] = by_market.get(mk, ZERO) + value
@@ -110,7 +116,7 @@ def value_book(db: Database, ledger: Ledger, book_id: str, price_fn: PriceFn, in
                 reserved_buy += v
     equity = cash_krw + positions_krw
     return BookValuation(book_id, cash, cash_krw, positions_krw, reserved, reserved_buy, equity, realized, unreal, fees,
-                         positions_krw + reserved_buy, by_inst, by_market, by_class, by_strat, stale)
+                         positions_krw + reserved_buy, by_inst, by_market, by_class, by_strat, stale, by_market_strat)
 
 
 @dataclass(frozen=True)

@@ -25,6 +25,7 @@ async def simulate(ctx: AppContext, hours: int, *, ai: bool = True) -> dict[str,
         raise TypeError("시뮬레이션에는 ManualClock이 필요합니다")
     clock: ManualClock = ctx.clock
     cycle = DecisionCycle(ctx)
+    await ctx.fx.refresh()
     for ex in ctx.all_executors():
         ex.recover_pending()
     summary: dict[str, Any] = {"cycles": 0, "orders": 0, "research": 0, "notes": []}
@@ -48,9 +49,9 @@ async def simulate(ctx: AppContext, hours: int, *, ai: bool = True) -> dict[str,
             res = await cycle.run(market)
             summary["cycles"] += 1
             summary["orders"] += len(res.orders)
-            if ai and ctx.ai.due_daily(market) and market in cycle.last_snapshots:
+            if ai and ctx.ai.due_research(market) and market in cycle.last_snapshots:
                 snap = cycle.last_snapshots[market]
-                rid = await ctx.ai.research(market, snap, cycle.signals_payload(snap), "daily")
+                rid = await ctx.ai.research(market, snap, cycle.signals_payload(snap), "scheduled")
                 if rid:
                     summary["research"] += 1
                     await ctx.ai.review(market, rid)

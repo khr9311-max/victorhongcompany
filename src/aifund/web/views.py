@@ -13,21 +13,13 @@ from aifund.core.money import D, ZERO
 from aifund.core.paths import MODE_LABELS
 from aifund.core.timeutil import parse_iso
 from aifund.db.database import loads
-from aifund.domain.models import ACTION_LABELS, STATUS_LABELS
 from aifund.evaluation.metrics import book_metrics, comparison
 from aifund.ledger.valuation import value_book
 from aifund.markets.calendar import session_info
 from aifund.service.context import OPERATING, AppContext
-
-BOOK_LABELS = {
-    "operating": "운용 장부",
-    "shadow_A": "비교 A(규칙 전략만)",
-    "shadow_B": "비교 B(+연구 AI)",
-    "shadow_C": "비교 C(+연구·검증 AI)",
-    "baseline_bh": "기준: 매수·보유",
-    "baseline_cash": "기준: 현금 유지",
-}
-STRATEGY_LABELS = {"trend_sma": "봇 A 추세", "mean_reversion": "봇 B 평균회귀", "ai_research": "AI 슬리브", "_book": "장부 공통"}
+from aifund.service.cycle import order_cap_krw
+from aifund.web import charts
+from aifund.web.labels import BOOK_LABELS, LABELS, MARKET_LABELS, MARKET_SLOTS, STRATEGY_LABELS, flag_label  # noqa: F401
 
 
 def market_rows(ctx: AppContext, runtime: Any) -> list[dict[str, Any]]:
@@ -45,6 +37,28 @@ def market_rows(ctx: AppContext, runtime: Any) -> list[dict[str, Any]]:
         if act:
             ok, why = ctx.activations.authorized(ctx.mode, market, act["account_id"], None, ctx.settings)
             live_state = "LIVE 활성" if ok else f"재확인 필요: {why}"
+        order_units = []
+        for symbol in ms.instruments:
+            inst = ctx.market_store.instrument(f"{market}:{symbol}")
+            quote = ctx.market_store.latest_quote(f"{market}:{symbol}")
+            if inst is None or quote is None or quote.ask is None:
+                order_units.append(f"{symbol}: 시세 수집 후 최소 주문금액 확인")
+                continue
+            minimum, _ = ctx.fx.to_krw(max(inst.min_notional, inst.qty_step * quote.ask), inst.quote_ccy,
+                                       ctx.settings.risk.max_fx_age_hours)
+            if minimum is None:
+                order_units.append(f"{symbol}: 환율 수집 필요")
+            else:
+                sleeve = max(ctx.settings.strategies.sleeves.values(), default=ZERO) * ms.allocation_krw
+                reason = " · 전략별 배정액 부족" if minimum > sleeve else ""
+                rule_budget = max((ctx.settings.strategies.sleeves.get(sid, ZERO) for sid in ("trend_sma", "mean_reversion")),
+                                  default=ZERO) * ms.allocation_krw / max(1, len(ms.instruments))
+                if minimum > rule_budget:
+                    reason += " · 규칙전략 종목별 배정액 부족"
+                if minimum > order_cap_krw(ctx.settings.risk, inst):
+                    reason += " · 1회 주문 한도 초과"
+                order_units.append(f"{symbol}: 최소 약 {minimum:,.0f}원(수수료 별도){reason}")
+        last_ai = ctx.db.scalar("SELECT MAX(created_at) FROM ai_reports WHERE market=? AND role='research'", (market,))
         rows.append({
             "market": market, "enabled": ms.enabled, "account": ms.account_id, "broker": ms.broker,
             "instruments": ", ".join(ms.instruments), "data": mr.data_reason if mr else "비활성",
@@ -53,8 +67,62 @@ def market_rows(ctx: AppContext, runtime: Any) -> list[dict[str, Any]]:
             "reconciled": ctx.startup_reconciled.get(mr.operating_executor.account_id) if mr and mr.operating_executor else None,
             "caps": mr.operating_broker.capabilities.as_rows() if mr and mr.operating_broker else [],
             "cap_notes": mr.operating_broker.capabilities.notes if mr and mr.operating_broker else (),
+            "allocation": ms.allocation_krw, "order_units": order_units,
+            # 화면 표시용
+            "label": MARKET_LABELS.get(market, market), "slot": MARKET_SLOTS.get(market, 1),
+            "data_ok": bool(mr and mr.data), "broker_ok": bool(mr and mr.operating_broker),
+            "session_open": sess.is_open if sess else None, "instrument_list": list(ms.instruments),
+            "data_provider": ms.data_provider, "ai_schedule": ctx.ai.schedule_text(market),
+            "last_research": parse_iso(last_ai) if last_ai else None,
         })
     return rows
+
+
+def composition(cap: dict[str, Any]) -> dict[str, Any]:
+    """평가자산 구성(원화 환산): 현금 + 시장별 보유 평가액. 합계 = 총자산."""
+    total = cap["equity"]
+    parts = [{"key": "cash", "label": "현금", "value": cap["cash"], "slot": None}]
+    for market in ("crypto", "kr_stock", "us_stock"):
+        value = cap["by_market"].get(market)
+        if value:
+            parts.append({"key": market, "label": MARKET_LABELS[market], "value": value, "slot": MARKET_SLOTS[market]})
+    for p in parts:
+        p["pct"] = float(p["value"] / total * 100) if total > 0 else 0.0
+    return {"total": total, "parts": parts}
+
+
+def health(ctx: AppContext, runtime: Any, markets: list[dict[str, Any]], cap: dict[str, Any]) -> list[dict[str, str]]:
+    """개요 첫 줄 상태 요약. level: good / warning / serious / critical (아이콘+문구로 표시, 색만으로 구분하지 않음)."""
+    items: list[dict[str, str]] = []
+    if runtime is None:
+        items.append({"level": "warning", "text": "대시보드만 실행 중 — 서비스(수집·판단·주문)는 돌지 않습니다"})
+    elif runtime.status != "running":
+        items.append({"level": "warning", "text": f"서비스 상태: {runtime.status}"})
+    for f in ctx.flags.all():
+        items.append({"level": "critical" if f["key"].startswith(("recon_block", "auth_error")) else "serious",
+                      "text": f"{flag_label(f['key'])} — {f['reason']}"})
+    risk = cap.get("risk")
+    if risk and risk.daily_stop_active:
+        items.append({"level": "critical", "text": "일손실 한도 도달: 오늘(KST) 신규 매수 중지"})
+    if risk and risk.drawdown_stop_active:
+        items.append({"level": "critical", "text": "최대 낙폭 한도 도달: 제어 화면에서 해제할 때까지 신규 매수 중지"})
+    for m in markets:
+        if not m["enabled"]:
+            continue
+        if not m["data_ok"]:
+            items.append({"level": "warning", "text": f"{m['label']} 시세 미연결 — {m['data']}"})
+        if m["reconciled"] is False:
+            items.append({"level": "serious", "text": f"{m['label']} 계좌 대사 미완료 — 신규 주문 차단 중"})
+    for key, err in (runtime.errors.items() if runtime else ()):
+        items.append({"level": "warning", "text": f"오류({key}): {str(err)[:160]}"})
+    if cap.get("stale"):
+        items.append({"level": "warning", "text": "평가 불완전: " + " · ".join(cap["stale"])})
+    ok, why = ctx.ai.availability()
+    if not ok and ctx.settings.ai.enabled and ctx.settings.ai.provider != "disabled":
+        items.append({"level": "warning", "text": f"AI 사용 불가 — {why}"})
+    if not items:
+        items.append({"level": "good", "text": "모든 점검 정상 — 정지·차단·연결 오류 없음"})
+    return items
 
 
 def capital(ctx: AppContext, book_id: str = OPERATING) -> dict[str, Any]:
@@ -62,7 +130,7 @@ def capital(ctx: AppContext, book_id: str = OPERATING) -> dict[str, Any]:
     principal = ctx.ledger.principal(book_id)
     setting = ctx.book_setting(book_id)
     ai_cost = ctx.ai_cost_for_setting(setting)
-    fees = -sum((D(r["delta"]) for r in ctx.db.query("SELECT delta FROM ledger_entries WHERE book_id=? AND kind='fee'", (book_id,))), ZERO)
+    fees = val.fees_krw
     risk = ctx.equity.state(book_id)
     return {"principal": principal, "cash": val.cash_krw, "cash_by_ccy": val.cash, "reserved": val.reserved_krw,
             "available": val.cash_krw - val.reserved_krw, "positions": val.positions_krw, "equity": val.equity_krw,
@@ -93,14 +161,25 @@ def overview(ctx: AppContext, runtime: Any) -> dict[str, Any]:
     for mr in ctx.markets.values():
         if isinstance(mr.data, UpbitMarketData):
             skew = mr.data.http.last_clock_skew
+    markets = market_rows(ctx, runtime)
+    cap = capital(ctx)
     return {
         "mode": ctx.mode, "mode_label": MODE_LABELS[ctx.mode], "status": runtime.status if runtime else "대시보드 단독",
         "errors": runtime.errors if runtime else {}, "last_cycle": runtime.last_cycle if runtime else {},
-        "markets": market_rows(ctx, runtime), "capital": capital(ctx), "flags": ctx.flags.all(), "incidents": incidents,
+        "markets": markets, "capital": cap, "flags": ctx.flags.all(), "incidents": incidents,
         "orders": orders, "positions": positions, "fx": ctx.fx.age_text(), "clock_skew": skew,
         "ai_status": ctx.ai.availability(), "budget": ctx.budget().month_usage(), "code_version": ctx.code_version,
         "settings_version": ctx.settings_version, "secrets": ctx.secrets.describe(),
+        "health": health(ctx, runtime, markets, cap), "composition": composition(cap),
+        "equity_chart": charts.equity_chart(ctx, OPERATING), "ai_label": ai_label(ctx),
     }
+
+
+def ai_label(ctx: AppContext) -> str:
+    """화면에 보일 AI 이름. 데모 모드는 설정과 무관하게 가짜 응답을 쓰므로 그렇게 표시한다."""
+    if ctx.mode == "offline_demo":
+        return "데모 AI(가짜 응답·비용 0) — 실제 AI 호출 없음"
+    return f"{ctx.settings.ai.provider} · {ctx.settings.ai.model}"
 
 
 def strategies_page(ctx: AppContext) -> dict[str, Any]:
@@ -124,7 +203,8 @@ def strategies_page(ctx: AppContext) -> dict[str, Any]:
     signals = [dict(r) for r in ctx.db.query(
         "SELECT * FROM signals WHERE cycle_id=(SELECT cycle_id FROM signals ORDER BY id DESC LIMIT 1) ORDER BY strategy_id, instrument_id")]
     return {"comparison": comp, "operating": op, "positions": positions, "strategies": strategies, "signals": signals,
-            "sleeves": ctx.settings.strategies.sleeves}
+            "sleeves": ctx.settings.strategies.sleeves, "compare_chart": charts.compare_chart(ctx),
+            "operating_setting": ctx.settings.operating_setting}
 
 
 def research_page(ctx: AppContext) -> dict[str, Any]:
@@ -146,10 +226,27 @@ def research_page(ctx: AppContext) -> dict[str, Any]:
         p["sources"] = loads(p["sources_json"], [])
         p["counter"] = loads(p["counterarguments_json"], [])
     news = [dict(r) for r in ctx.db.query("SELECT * FROM sources ORDER BY fetched_at DESC LIMIT 20")]
+    budget = ctx.budget().month_usage()
+    used = budget.settled_krw + budget.reserved_krw
+    pricing = ctx.settings.ai.pricing.get(ctx.settings.ai.model)
+    schedule = []
+    for market, ms in ctx.settings.markets.items():
+        if not ms.enabled:
+            continue
+        last = ctx.db.query_one("SELECT created_at, valid FROM ai_reports WHERE market=? AND role='research' "
+                                "ORDER BY created_at DESC LIMIT 1", (market,))
+        schedule.append({"market": market, "label": MARKET_LABELS.get(market, market), "slot": MARKET_SLOTS.get(market, 1),
+                         "rule": ctx.ai.schedule_text(market), "last": parse_iso(last["created_at"]) if last else None,
+                         "last_valid": bool(last["valid"]) if last else None,
+                         "events_today": ctx.ai.event_calls_today(market)})
     return {"runs": runs, "reports": reports, "proposals": proposals, "news": news, "availability": ctx.ai.availability(),
-            "budget": ctx.budget().month_usage(), "provider": ctx.settings.ai.provider, "model": ctx.settings.ai.model,
-            "locked": ctx.locked_settings, "pricing": ctx.settings.ai.pricing.get(ctx.settings.ai.model),
-            "feeds": ctx.news.last_results}
+            "budget": budget, "provider": ctx.settings.ai.provider, "model": ctx.settings.ai.model,
+            "locked": ctx.locked_settings, "pricing": pricing,
+            "rates_now": pricing.rates(ctx.clock.now()) if pricing else None,
+            "feeds": ctx.news.last_results, "schedule": schedule, "effort": ctx.settings.ai.effort,
+            "budget_pct": float(used / budget.cap_krw * 100) if budget.cap_krw > 0 else 0.0,
+            "max_event_calls": ctx.settings.ai.max_event_calls_per_day, "demo_ai": ctx.mode == "offline_demo",
+            "enabled_markets": [(m, MARKET_LABELS.get(m, m)) for m in ctx.settings.enabled_markets()]}
 
 
 def orders_page(ctx: AppContext, book: str | None = None, limit: int = 100) -> dict[str, Any]:
@@ -220,9 +317,6 @@ def settings_page(ctx: AppContext) -> dict[str, Any]:
              for r in ctx.db.query("SELECT * FROM strategy_candidates ORDER BY created_at DESC LIMIT 20")]
     return {"s": ctx.settings, "version": ctx.settings_version, "history": ctx.store_settings.history(30), "locked": ctx.locked_settings,
             "candidates": cands}
-
-
-LABELS = {"status": STATUS_LABELS, "action": ACTION_LABELS, "book": BOOK_LABELS, "strategy": STRATEGY_LABELS}
 
 
 def dec(v: Any) -> Decimal | None:

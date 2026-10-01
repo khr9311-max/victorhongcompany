@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import hashlib
+import html
 import logging
 import re
 from dataclasses import dataclass
@@ -31,6 +32,7 @@ def sanitize(text: str | None, limit: int = 500) -> str:
     if not text:
         return ""
     t = _TAGS.sub(" ", text)
+    t = html.unescape(t)
     t = _CTRL.sub(" ", t)
     t = re.sub(r"\s+", " ", t).strip()
     return t[:limit]
@@ -126,6 +128,49 @@ class NewsCollector:
         res = FeedResult(feed.name, True, new)
         self.last_results[feed.name] = res
         return res
+
+    async def fetch_naver(self, client_id: str, client_secret: str, query: str,
+                          market: str, max_items: int = 30) -> FeedResult:
+        name = f"네이버 {market}: {query}"
+        client = self._client or httpx.AsyncClient(timeout=15)
+        try:
+            response = await client.get(
+                "https://openapi.naver.com/v1/search/news.json",
+                headers={"X-Naver-Client-Id": client_id, "X-Naver-Client-Secret": client_secret},
+                params={"query": query, "display": min(100, max(1, max_items)), "sort": "date"},
+            )
+            response.raise_for_status()
+            items = response.json()["items"]
+            if not isinstance(items, list):
+                raise ValueError("Invalid items")
+            new = 0
+            with self.db.tx() as c:
+                for item in items[:max_items]:
+                    if not isinstance(item, dict):
+                        continue
+                    title = sanitize(item.get("title"), 300)
+                    url = safe_url(item.get("originallink")) or safe_url(item.get("link"))
+                    published = _parse_date(item.get("pubDate"))
+                    if not title or not url or published is None:
+                        continue
+                    sid = "naver:" + hashlib.sha256(f"{market}|{url}".encode()).hexdigest()[:20]
+                    cur = c.execute(
+                        "INSERT OR IGNORE INTO sources(source_id,kind,feed,title,url,published_at,fetched_at,market,instruments_json,summary) "
+                        "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                        (sid, "news", name, title, url, to_iso(published), to_iso(self.clock.now()),
+                         market, "[]", sanitize(item.get("description"), 500)),
+                    )
+                    new += cur.rowcount
+            result = FeedResult(name, True, new)
+        except Exception as exc:
+            # 요청 헤더·응답 본문·키 값은 남기지 않는다. 상태 코드만 기록(401 키 오류, 429 한도 초과 등).
+            detail = f"HTTP {exc.response.status_code}" if isinstance(exc, httpx.HTTPStatusError) else type(exc).__name__
+            result = FeedResult(name, False, 0, detail)
+        finally:
+            if self._client is None:
+                await client.aclose()
+        self.last_results[name] = result
+        return result
 
     async def fetch_dart(self, api_key: str, corp_codes: list[str] | None = None) -> FeedResult:
         """DART 공시 목록(opendart.fss.or.kr list.json). 키가 있을 때만 사용."""

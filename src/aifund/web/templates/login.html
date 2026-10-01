@@ -1,15 +1,16 @@
 {% extends "base.html" %}
 {% block title %}로그인{% endblock %}
 {% block content %}
-<div class="card" style="max-width:520px">
-  <h2>관리자 로그인</h2>
+<section class="card" style="max-width:520px; margin:24px auto">
+  <h1 style="font-size:20px">관리자 로그인</h1>
+  <p class="sub">현황 조회는 로그인 없이 가능하고, 제어·설정 변경에만 관리자 토큰이 필요합니다.</p>
   {% if not has_token %}
-  <p class="bad">관리자 토큰이 설정되지 않았습니다. 터미널에서 <code>aifund setup</code>을 실행하면 <code>.env</code>에 <code>AIFUND_ADMIN_TOKEN</code>이 생성됩니다.</p>
+  <div class="notice notice-critical" style="margin-top:12px"><i aria-hidden="true">✕</i><div>관리자 토큰이 설정되지 않았습니다. 터미널에서 <code>aifund setup</code>을 실행하면 <code>.env</code>에 <code>AIFUND_ADMIN_TOKEN</code>이 생성됩니다.</div></div>
   {% endif %}
-  <form method="post" action="/login" class="inline">
-    <input type="password" name="token" placeholder="AIFUND_ADMIN_TOKEN" required autocomplete="current-password" style="min-width:320px">
+  <form method="post" action="/login" style="display:flex; gap:8px; flex-wrap:wrap; margin-top:14px">
+    <input type="password" name="token" placeholder="AIFUND_ADMIN_TOKEN" required autocomplete="current-password" aria-label="관리자 토큰" style="flex:1; min-width:240px">
     <button>로그인</button>
   </form>
-  <p class="small muted">토큰은 프로젝트의 .env 파일에 있습니다. 화면·로그에는 표시되지 않습니다.</p>
-</div>
+  <p class="small muted" style="margin-top:12px">토큰은 프로젝트의 .env 파일에 있습니다. 화면·로그에는 표시되지 않습니다. 로그인은 12시간 유지됩니다.</p>
+</section>
 {% endblock %}

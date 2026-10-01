@@ -1,88 +1,130 @@
 {% extends "base.html" %}
+{% import "_ui.html" as ui %}
 {% block title %}설정{% endblock %}
 {% block content %}
 {% set s = d.s %}
-<div class="card">
-  <h2>설정 (현재 버전 v{{ d.version }}) — 엔지니어링 프리셋이며 검증된 최적 투자조건이 아닙니다. AI는 설정을 바꿀 수 없습니다.</h2>
-  {% if not sess %}<p class="bad">변경하려면 <a href="/login">로그인</a>하세요.</p>{% endif %}
-  <form method="post" action="/settings/save">
-    <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="_bools" value="1">
-    <h3 class="small">운용·위험 한도</h3>
-    <div class="settings-grid">
-      <label>운용 설정(실제 주문에 쓰는 단일 설정)<select name="operating_setting">{% for x in ['A','B','C'] %}<option {{ 'selected' if s.operating_setting==x }}>{{ x }}</option>{% endfor %}</select></label>
-      <label>원금 한도(원)<input name="risk.principal_cap_krw" value="{{ s.risk.principal_cap_krw }}"></label>
-      <label>총노출 한도(원)<input name="risk.gross_exposure_cap_krw" value="{{ s.risk.gross_exposure_cap_krw }}"></label>
-      <label>1회 주문 한도(원)<input name="risk.max_order_notional_krw" value="{{ s.risk.max_order_notional_krw }}"></label>
-      <label>최대 보유 종목 수<input name="risk.max_open_positions" value="{{ s.risk.max_open_positions }}"></label>
-      <label>일손실 정지(원)<input name="risk.daily_loss_stop_krw" value="{{ s.risk.daily_loss_stop_krw }}"></label>
-      <label>최대 낙폭 정지(%)<input name="risk.max_drawdown_stop_pct" value="{{ s.risk.max_drawdown_stop_pct }}"></label>
-      <label>호가 최대 지연(초)<input name="risk.max_quote_age_sec" value="{{ s.risk.max_quote_age_sec }}"></label>
-      <label>최대 스프레드(%)<input name="risk.max_spread_pct" value="{{ s.risk.max_spread_pct }}"></label>
-      <label>재조정 최소 금액(원)<input name="strategies.rebalance_threshold_krw" value="{{ s.strategies.rebalance_threshold_krw }}"></label>
-      <label>레버리지/차입/공매도<input value="1 / 없음 / 없음 (고정)" disabled></label>
-    </div>
-    <h3 class="small">시장·허용 종목</h3>
-    <table class="small"><tr><th>시장</th><th>사용</th><th>계좌 ID</th><th>허용 종목(쉼표)</th><th>배정(원)</th><th>봉</th></tr>
-    {% for name, m in s.markets.items() %}<tr><td>{{ name }}<input type="hidden" name="m.{{ name }}.present" value="1"></td>
-      <td><input type="checkbox" name="m.{{ name }}.enabled" {{ 'checked' if m.enabled }}></td>
-      <td><input name="m.{{ name }}.account_id" value="{{ m.account_id }}" size="12"></td>
-      <td><input name="m.{{ name }}.instruments" value="{{ m.instruments|join(', ') }}" size="36"></td>
-      <td><input name="m.{{ name }}.allocation_krw" value="{{ m.allocation_krw }}" size="9"></td><td>{{ m.candle }}</td></tr>{% endfor %}
-    </table>
-    <p class="small muted">미국 종목은 <code>NASD:AAPL</code>처럼 거래소코드:티커. 국내는 6자리 코드. 코인은 <code>KRW-BTC</code>.</p>
-    <h3 class="small">전략·슬리브</h3>
-    <div class="settings-grid">
-      <label>봇 A 추세 사용<input type="hidden" name="s.trend_sma.present" value="1"><input type="checkbox" name="s.trend_sma.enabled" {{ 'checked' if s.strategies.trend_sma.enabled }}></label>
-      <label>봇 B 평균회귀 사용<input type="hidden" name="s.mean_reversion.present" value="1"><input type="checkbox" name="s.mean_reversion.enabled" {{ 'checked' if s.strategies.mean_reversion.enabled }}></label>
-      {% for sid, w in s.strategies.sleeves.items() %}<label>슬리브 {{ sid|label('strategy') }}<input name="sleeve.{{ sid }}" value="{{ w }}"></label>{% endfor %}
-      <label>추세 fast<input name="p.trend_sma.fast" value="{{ s.strategies.trend_sma.params.get('fast', 20) }}"></label>
-      <label>추세 slow<input name="p.trend_sma.slow" value="{{ s.strategies.trend_sma.params.get('slow', 60) }}"></label>
-      <label>평균회귀 BB 기간<input name="p.mean_reversion.bb_period" value="{{ s.strategies.mean_reversion.params.get('bb_period', 20) }}"></label>
-      <label>평균회귀 BB 배수<input name="p.mean_reversion.bb_k" value="{{ s.strategies.mean_reversion.params.get('bb_k', '2.0') }}"></label>
-      <label>RSI 진입<input name="p.mean_reversion.rsi_entry" value="{{ s.strategies.mean_reversion.params.get('rsi_entry', 30) }}"></label>
-      <label>RSI 청산<input name="p.mean_reversion.rsi_exit" value="{{ s.strategies.mean_reversion.params.get('rsi_exit', 55) }}"></label>
-      <label>로컬 손절(%)<input name="p.mean_reversion.stop_loss_pct" value="{{ s.strategies.mean_reversion.params.get('stop_loss_pct', 8) }}"></label>
-      <label>최대 보유 봉<input name="p.mean_reversion.max_hold_bars" value="{{ s.strategies.mean_reversion.params.get('max_hold_bars', 48) }}"></label>
-    </div>
-    <h3 class="small">AI (공급자·모델은 환경변수로 고정 가능{% if d.locked %}: 현재 {{ d.locked }}{% endif %})</h3>
-    <div class="settings-grid">
-      <label>AI 사용<input type="checkbox" name="ai.enabled" {{ 'checked' if s.ai.enabled }}></label>
-      <label>공급자<select name="ai.provider">{% for x in ['anthropic','ollama','disabled'] %}<option {{ 'selected' if s.ai.provider==x }}>{{ x }}</option>{% endfor %}</select></label>
-      <label>모델<input name="ai.model" value="{{ s.ai.model }}"></label>
-      <label>effort<select name="ai.effort">{% for x in ['low','medium','high','xhigh','max'] %}<option {{ 'selected' if s.ai.effort==x }}>{{ x }}</option>{% endfor %}</select></label>
-      <label>월 AI 예산(원)<input name="ai.monthly_budget_krw" value="{{ s.ai.monthly_budget_krw }}"></label>
-      <label>최대 출력 토큰<input name="ai.max_output_tokens" value="{{ s.ai.max_output_tokens }}"></label>
-      <label>일일 연구 시각(KST)<input name="ai.daily_research_time_kst" value="{{ s.ai.daily_research_time_kst }}"></label>
-      <label>AI 불가 시<select name="ai.when_unavailable"><option value="continue_rules" {{ 'selected' if s.ai.when_unavailable=='continue_rules' }}>규칙 전략 계속</option><option value="hold_new_risk" {{ 'selected' if s.ai.when_unavailable=='hold_new_risk' }}>신규 위험 보류</option></select></label>
-      <label>AI 반대 시 규칙 매수 보류<input type="checkbox" name="ai.veto_rule_buys" {{ 'checked' if s.ai.veto_rule_buys }}></label>
-      <label>검증 AI 독립 평가 단계<input type="checkbox" name="ai.independent_review_pass" {{ 'checked' if s.ai.independent_review_pass }}></label>
-    </div>
-    <p class="small muted">요율 표: {% for k, p in s.ai.pricing.items() %}<span class="chip">{{ k }} ${{ p.input_usd_per_mtok }}/${{ p.output_usd_per_mtok }} ({{ p.checked_at }})</span>{% endfor %} — 표에 없는 모델은 유료 자동 호출이 비활성화됩니다(config.toml에서 추가).</p>
-    <h3 class="small">운용 주기·알림</h3>
-    <div class="settings-grid">
-      <label>시세 폴링(초)<input name="schedule.quote_poll_sec" value="{{ s.schedule.quote_poll_sec }}"></label>
-      <label>주문 폴링(초)<input name="schedule.order_poll_sec" value="{{ s.schedule.order_poll_sec }}"></label>
-      <label>텔레그램(본인 수신처 .env 필요)<input type="checkbox" name="notify.telegram" {{ 'checked' if s.notify.telegram }}></label>
-      <label>웹훅(본인 URL .env 필요)<input type="checkbox" name="notify.webhook" {{ 'checked' if s.notify.webhook }}></label>
-      <label>외부 알림 최소 심각도<select name="notify.min_severity">{% for x in ['info','warning','critical'] %}<option {{ 'selected' if s.notify.min_severity==x }}>{{ x }}</option>{% endfor %}</select></label>
-    </div>
-    <p><input name="reason" placeholder="변경 사유(이력에 기록)" size="50"> {% if sess %}<button>저장·적용</button>{% endif %}</p>
-    <p class="small warn">한도·종목·계좌·운용 설정을 바꾸면 LIVE가 켜진 시장은 '재확인 필요'로 바뀌고 실주문이 멈춥니다.</p>
-  </form>
+<div class="page-head">
+  <div class="grow">
+    <h1>설정 <span class="badge strong">현재 v{{ d.version }}</span></h1>
+    <p class="sub">엔지니어링 프리셋이며 검증된 최적 투자조건이 아닙니다. 모든 변경은 버전으로 남고, AI는 설정을 바꿀 수 없습니다.</p>
+  </div>
 </div>
+{% if not sess %}<div class="notice notice-warning"><i aria-hidden="true">!</i><div>변경하려면 <a href="/login">로그인</a>하세요. 로그인 전에는 현재 값만 볼 수 있습니다.</div></div>{% endif %}
+<p class="small muted" style="margin:-4px 0 14px">내부 모의·데모는 config/paper.toml, 그 외 모드는 config/config.toml을 씁니다. 파일을 고치면 다음 시작 때 파일에서 바뀐 항목만 반영되고 이 화면에서 바꾼 다른 값은 유지됩니다. 시장 사용·시세 공급자·모의 원금 변경은 서비스를 재시작해야 적용됩니다.</p>
 
-<div class="card"><h2>전략 개선 후보(연구 AI 주간 검토·사용자)</h2>
-  <table class="small"><tr><th>생성</th><th>출처</th><th>전략</th><th>변경</th><th>이유</th><th>상태</th><th>실험 결과(개발/평가 구간)</th><th></th></tr>
-  {% for c in d.candidates %}<tr><td>{{ c.created_at|kst }}</td><td>{{ c.source }}</td><td>{{ c.strategy_id }}</td>
+<form method="post" action="/settings/save">
+  <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="_bools" value="1">
+
+  <section class="card">
+    <h2>운용·위험 한도</h2>
+    <p class="sub">손실 제한은 신규 위험 증가를 멈추는 기준이며 최대 손실을 보증하지 않습니다.</p>
+    <div class="fields" style="margin-top:12px">
+      <label class="field">운용 설정(실제 주문에 쓰는 단일 설정)<select name="operating_setting">{% for x in ['A','B','C'] %}<option value="{{ x }}" {{ 'selected' if s.operating_setting==x }}>{{ x|label('setting') }}</option>{% endfor %}</select></label>
+      <label class="field">원금 한도(원)<input name="risk.principal_cap_krw" value="{{ s.risk.principal_cap_krw }}" inputmode="decimal"><span class="hint">모의 모드에서는 가상 원금(재시작 시 차액 기록)</span></label>
+      <label class="field">총노출 한도(원)<input name="risk.gross_exposure_cap_krw" value="{{ s.risk.gross_exposure_cap_krw }}" inputmode="decimal"><span class="hint">보유 + 매수 예약금 합계 상한</span></label>
+      <label class="field">1회 주문 한도(원)<input name="risk.max_order_notional_krw" value="{{ s.risk.max_order_notional_krw }}" inputmode="decimal"></label>
+      <label class="field">최대 보유 종목 수<input name="risk.max_open_positions" value="{{ s.risk.max_open_positions }}" inputmode="numeric"></label>
+      <label class="field">일손실 정지(원)<input name="risk.daily_loss_stop_krw" value="{{ s.risk.daily_loss_stop_krw }}" inputmode="decimal"><span class="hint">도달하면 그날(KST) 신규 매수 중지</span></label>
+      <label class="field">최대 낙폭 정지(%)<input name="risk.max_drawdown_stop_pct" value="{{ s.risk.max_drawdown_stop_pct }}" inputmode="decimal"><span class="hint">제어 화면에서 해제할 때까지 신규 매수 중지</span></label>
+      <label class="field">호가 최대 지연(초)<input name="risk.max_quote_age_sec" value="{{ s.risk.max_quote_age_sec }}" inputmode="numeric"></label>
+      <label class="field">최대 스프레드(%)<input name="risk.max_spread_pct" value="{{ s.risk.max_spread_pct }}" inputmode="decimal"></label>
+      <label class="field">재조정 최소 금액(원)<input name="strategies.rebalance_threshold_krw" value="{{ s.strategies.rebalance_threshold_krw }}" inputmode="decimal"></label>
+      <label class="field">레버리지 / 차입 / 공매도<input value="1 / 없음 / 없음 (고정)" disabled></label>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>시장·허용 종목·뉴스 검색어</h2>
+    <p class="sub">미국 종목은 <code>NASD:AAPL</code>처럼 거래소코드:티커, 국내는 6자리 코드, 코인은 <code>KRW-BTC</code>. 종목을 바꾸면 뉴스 검색어도 함께 확인하세요.</p>
+    <div class="tbl-wrap" style="margin-top:10px"><table class="small">
+      <tr><th>시장</th><th>사용</th><th>시세 공급자</th><th>계좌 ID</th><th>허용 종목(쉼표)</th><th>배정(원)</th><th>봉</th><th>네이버 뉴스 검색어(쉼표, 최대 10개)</th></tr>
+      {% for name, m in s.markets.items() %}<tr><td class="nowrap">{{ ui.market(name) }}<input type="hidden" name="m.{{ name }}.present" value="1"></td>
+        <td><input type="checkbox" name="m.{{ name }}.enabled" aria-label="{{ name|label('market') }} 사용" {{ 'checked' if m.enabled }}></td>
+        <td>{% if name in ["kr_stock", "us_stock"] %}<select name="m.{{ name }}.data_provider" aria-label="시세 공급자">{% for source, text in [("default", "KIS(기본)"), ("kiwoom", "키움 조회")] %}<option value="{{ source }}" {{ "selected" if m.data_provider == source }}>{{ text }}</option>{% endfor %}</select>{% else %}업비트{% endif %}</td>
+        <td><input name="m.{{ name }}.account_id" value="{{ m.account_id }}" size="11" aria-label="계좌 ID"></td>
+        <td><input name="m.{{ name }}.instruments" value="{{ m.instruments|join(', ') }}" size="30" aria-label="허용 종목"></td>
+        <td><input name="m.{{ name }}.allocation_krw" value="{{ m.allocation_krw }}" size="9" inputmode="decimal" aria-label="배정 금액"></td><td>{{ m.candle }}</td>
+        <td><input name="n.{{ name }}.queries" value="{{ s.news.naver_queries.get(name, [])|join(', ') }}" size="34" aria-label="네이버 뉴스 검색어"></td></tr>{% endfor %}
+    </table></div>
+    <p class="small muted">국내·미국주식 시세: KIS(기본) 또는 키움 조회 전용. 내부 모의운용 주문은 가상 체결됩니다.</p>
+  </section>
+
+  <section class="card">
+    <h2>전략·슬리브</h2>
+    <p class="sub">슬리브 = 시장 배정액 중 전략별 비율(합계 1 이하). A 설정에서는 AI 슬리브를 현금으로 둡니다.</p>
+    <div class="fields" style="margin-top:12px">
+      <label class="field check"><input type="hidden" name="s.trend_sma.present" value="1"><input type="checkbox" name="s.trend_sma.enabled" {{ 'checked' if s.strategies.trend_sma.enabled }}> 봇 A 추세 사용</label>
+      <label class="field check"><input type="hidden" name="s.mean_reversion.present" value="1"><input type="checkbox" name="s.mean_reversion.enabled" {{ 'checked' if s.strategies.mean_reversion.enabled }}> 봇 B 평균회귀 사용</label>
+      {% for sid, w in s.strategies.sleeves.items() %}<label class="field">슬리브 {{ sid|label('strategy') }}<input name="sleeve.{{ sid }}" value="{{ w }}" inputmode="decimal"></label>{% endfor %}
+      <label class="field">추세 fast<input name="p.trend_sma.fast" value="{{ s.strategies.trend_sma.params.get('fast', 20) }}" inputmode="numeric"></label>
+      <label class="field">추세 slow<input name="p.trend_sma.slow" value="{{ s.strategies.trend_sma.params.get('slow', 60) }}" inputmode="numeric"></label>
+      <label class="field">평균회귀 BB 기간<input name="p.mean_reversion.bb_period" value="{{ s.strategies.mean_reversion.params.get('bb_period', 20) }}" inputmode="numeric"></label>
+      <label class="field">평균회귀 BB 배수<input name="p.mean_reversion.bb_k" value="{{ s.strategies.mean_reversion.params.get('bb_k', '2.0') }}" inputmode="decimal"></label>
+      <label class="field">RSI 진입<input name="p.mean_reversion.rsi_entry" value="{{ s.strategies.mean_reversion.params.get('rsi_entry', 30) }}" inputmode="decimal"></label>
+      <label class="field">RSI 청산<input name="p.mean_reversion.rsi_exit" value="{{ s.strategies.mean_reversion.params.get('rsi_exit', 55) }}" inputmode="decimal"></label>
+      <label class="field">로컬 손절(%)<input name="p.mean_reversion.stop_loss_pct" value="{{ s.strategies.mean_reversion.params.get('stop_loss_pct', 8) }}" inputmode="decimal"><span class="hint">거래소 보호 주문이 아님(맥북·네트워크가 꺼지면 동작 안 함)</span></label>
+      <label class="field">최대 보유 봉<input name="p.mean_reversion.max_hold_bars" value="{{ s.strategies.mean_reversion.params.get('max_hold_bars', 48) }}" inputmode="numeric"></label>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>AI 연구·검증</h2>
+    <p class="sub">공급자·모델은 환경변수로 고정할 수 있습니다{% if d.locked %}(현재 고정: {{ d.locked }}){% endif %}. 공급자를 바꾸면 모델도 그 회사 것으로 바꾸세요.</p>
+    <label class="field" style="margin-top:12px">연구 관심사(연구·검증 AI에 대표 지시로 전달, 1000자 이내 — 매매 권한은 없음)
+      <textarea name="ai.research_focus" rows="3" maxlength="1000">{{ s.ai.research_focus }}</textarea></label>
+    <div class="fields" style="margin-top:12px">
+      <label class="field check"><input type="checkbox" name="ai.enabled" {{ 'checked' if s.ai.enabled }}> AI 사용</label>
+      <label class="field">공급자<select name="ai.provider">{% for x in ['anthropic','gemini','ollama','disabled'] %}<option {{ 'selected' if s.ai.provider==x }}>{{ x }}</option>{% endfor %}</select></label>
+      <label class="field">모델<input name="ai.model" value="{{ s.ai.model }}"><span class="hint">아래 요율 표에 있어야 유료 자동 호출</span></label>
+      <label class="field">추론 강도(effort)<select name="ai.effort">{% for x in ['low','medium','high','xhigh','max'] %}<option {{ 'selected' if s.ai.effort==x }}>{{ x }}</option>{% endfor %}</select><span class="hint">Gemini는 low·medium·high(xhigh·max는 high)</span></label>
+      <label class="field">월 AI 예산(원)<input name="ai.monthly_budget_krw" value="{{ s.ai.monthly_budget_krw }}" inputmode="decimal"><span class="hint">호출 폭주 방지용 상한</span></label>
+      <label class="field">최대 출력 토큰<input name="ai.max_output_tokens" value="{{ s.ai.max_output_tokens }}" inputmode="numeric"><span class="hint">추론 토큰 포함(256~32000)</span></label>
+      <label class="field">최대 입력 글자 수<input name="ai.max_input_chars" value="{{ s.ai.max_input_chars }}" inputmode="numeric"></label>
+      <label class="field">연구 입력 뉴스 수<input name="ai.max_news_items" value="{{ s.ai.max_news_items }}" inputmode="numeric"><span class="hint">최근 48시간 뉴스·공시</span></label>
+      <label class="field">AI 응답 시간 한도(초)<input name="ai.timeout_sec" value="{{ s.ai.timeout_sec }}" inputmode="decimal"></label>
+      <label class="field">코인 연구 기준 시각(KST)<input name="ai.daily_research_time_kst" value="{{ s.ai.daily_research_time_kst }}"></label>
+      <label class="field">코인 연구 간격(시간)<input name="ai.crypto_research_interval_hours" value="{{ s.ai.crypto_research_interval_hours }}" inputmode="numeric"><span class="hint">24 = 하루 1회</span></label>
+      <label class="field">주식 연구: 개장 몇 분 전<input name="ai.stock_research_lead_min" value="{{ s.ai.stock_research_lead_min }}" inputmode="numeric"><span class="hint">국내·미국 각 시장 개장 기준(서머타임 자동)</span></label>
+      <label class="field">급변 시 추가 연구(시장별 하루 최대)<input name="ai.max_event_calls_per_day" value="{{ s.ai.max_event_calls_per_day }}" inputmode="numeric"></label>
+      <label class="field">AI 불가 시<select name="ai.when_unavailable"><option value="continue_rules" {{ 'selected' if s.ai.when_unavailable=='continue_rules' }}>규칙 전략 계속</option><option value="hold_new_risk" {{ 'selected' if s.ai.when_unavailable=='hold_new_risk' }}>신규 위험 보류</option></select></label>
+      <label class="field check"><input type="checkbox" name="ai.veto_rule_buys" {{ 'checked' if s.ai.veto_rule_buys }}> AI 반대 시 규칙 매수 보류</label>
+      <label class="field check"><input type="checkbox" name="ai.independent_review_pass" {{ 'checked' if s.ai.independent_review_pass }}> 검증 AI 독립 평가 단계</label>
+    </div>
+    <p class="small muted" style="margin-top:12px">요율 표(입력/출력 USD, 백만 토큰당): {% for k, p in s.ai.pricing.items() %}<span class="badge">{{ k }} ${{ p.input_usd_per_mtok }}/${{ p.output_usd_per_mtok }}{% if p.changes_on %} → {{ p.changes_on }}부터 ${{ p.new_input_usd_per_mtok }}/${{ p.new_output_usd_per_mtok }}{% endif %} ({{ p.checked_at }})</span>{% endfor %}
+      — 표에 없는 모델은 유료 자동 호출이 비활성화됩니다(config/paper.toml 또는 config/config.toml의 <code>[ai.pricing."모델"]</code>에 추가).</p>
+  </section>
+
+  <section class="card">
+    <h2>운용 주기·뉴스·알림</h2>
+    <div class="fields" style="margin-top:12px">
+      <label class="field">시세 폴링(초)<input name="schedule.quote_poll_sec" value="{{ s.schedule.quote_poll_sec }}" inputmode="numeric"></label>
+      <label class="field">주문 폴링(초)<input name="schedule.order_poll_sec" value="{{ s.schedule.order_poll_sec }}" inputmode="numeric"></label>
+      <label class="field check"><input type="checkbox" name="news.naver_enabled" {{ 'checked' if s.news.naver_enabled }}> 네이버 뉴스 수집(.env 키 필요)</label>
+      <label class="field check"><input type="checkbox" name="notify.telegram" {{ 'checked' if s.notify.telegram }}> 텔레그램(본인 수신처 .env 필요)</label>
+      <label class="field check"><input type="checkbox" name="notify.webhook" {{ 'checked' if s.notify.webhook }}> 웹훅(본인 URL .env 필요)</label>
+      <label class="field">외부 알림 최소 심각도<select name="notify.min_severity">{% for x in ['info','warning','critical'] %}<option value="{{ x }}" {{ 'selected' if s.notify.min_severity==x }}>{{ x|label('severity') }}</option>{% endfor %}</select></label>
+    </div>
+  </section>
+
+  <div class="savebar">
+    <input name="reason" placeholder="변경 사유(이력에 기록)" aria-label="변경 사유">
+    {% if sess %}<button>저장·적용</button>{% else %}<a class="btn secondary" href="/login">로그인 후 저장</a>{% endif %}
+    <span class="small warn" style="flex-basis:100%">한도·종목·계좌·운용 설정을 바꾸면 LIVE가 켜진 시장은 '재확인 필요'로 바뀌고 실주문이 멈춥니다.</span>
+  </div>
+</form>
+
+<section class="card" style="margin-top:18px"><h2>전략 개선 후보(연구 AI 주간 검토·사용자)</h2>
+  <p class="sub">후보는 실거래 전략을 자동으로 덮어쓰지 않습니다. 승격 = 새 설정 버전, 되돌리기 = 이전 파라미터로 새 버전.</p>
+  <div class="tbl-wrap" style="margin-top:8px"><table class="small"><tr><th>생성</th><th>출처</th><th>전략</th><th>변경</th><th>이유</th><th>상태</th><th>실험 결과(개발/평가 구간)</th><th></th></tr>
+  {% for c in d.candidates %}<tr><td class="nowrap">{{ c.created_at|kst }}</td><td>{{ c.source }}</td><td>{{ c.strategy_id|label('strategy') }}</td>
     <td>{% for k, v in c.params.items() %}{% if c.base.get(k) != v %}{{ k }}: {{ c.base.get(k) }}→{{ v }}<br>{% endif %}{% endfor %}</td>
     <td>{{ c.rationale }}</td><td>{{ c.status }}</td>
     <td>{% if c.bt %}기존 전체 {{ c.bt.base.total.return_pct|pct }} / 후보 전체 {{ c.bt.candidate.total.return_pct|pct }}<br><span class="muted">{{ c.bt.base.note }}</span>{% else %}-{% endif %}</td>
-    <td>{% if sess %}{% for a, lbl in [('backtest','실험'),('promote','승격'),('rollback','되돌리기')] %}
-      <form class="inline" method="post" action="/settings/candidate/{{ c.candidate_id }}/{{ a }}"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="secondary">{{ lbl }}</button></form>{% endfor %}{% endif %}</td></tr>
-  {% else %}<tr><td colspan="8" class="muted">후보 없음</td></tr>{% endfor %}</table>
-  <p class="small muted">후보는 실거래 전략을 자동으로 덮어쓰지 않습니다. 승격 = 새 설정 버전, 되돌리기 = 이전 파라미터로 새 버전.</p></div>
+    <td class="nowrap">{% if sess %}{% for a, lbl in [('backtest','실험'),('promote','승격'),('rollback','되돌리기')] %}
+      <form class="inline" method="post" action="/settings/candidate/{{ c.candidate_id }}/{{ a }}"{% if a != 'backtest' %} data-confirm="후보를 {{ lbl }}할까요? 새 설정 버전이 만들어집니다."{% endif %}><input type="hidden" name="csrf" value="{{ csrf }}"><button class="secondary small">{{ lbl }}</button></form>{% endfor %}{% endif %}</td></tr>
+  {% else %}<tr><td colspan="8" class="empty">후보 없음</td></tr>{% endfor %}</table></div></section>
 
-<div class="card"><h2>설정 변경 이력</h2>
-  <table class="small"><tr><th>버전</th><th>시각</th><th>주체</th><th>사유</th><th>해시</th></tr>
-  {% for h in d.history %}<tr><td>v{{ h.version }}</td><td>{{ h.created_at|kst }}</td><td>{{ h.actor }}</td><td>{{ h.reason }}</td><td><code>{{ h.settings_hash }}</code></td></tr>{% endfor %}</table></div>
+<section class="card"><h2>설정 변경 이력</h2>
+  <div class="tbl-wrap" style="margin-top:8px"><table class="small"><tr><th>버전</th><th>시각</th><th>주체</th><th>사유</th><th>해시</th></tr>
+  {% for h in d.history %}<tr class="{{ 'hl' if h.version == d.version }}"><td>v{{ h.version }}</td><td class="nowrap">{{ h.created_at|kst }}</td><td>{{ h.actor }}</td><td>{{ h.reason }}</td><td><code>{{ h.settings_hash }}</code></td></tr>{% endfor %}</table></div></section>
 {% endblock %}

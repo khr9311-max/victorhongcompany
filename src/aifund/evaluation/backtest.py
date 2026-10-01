@@ -12,6 +12,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
+from aifund.config.settings import PaperSettings
 from aifund.core.money import ZERO, floor_step
 from aifund.data.collector import InstrumentSnap, Snapshot
 from aifund.domain.models import Action, Candle, Instrument
@@ -19,6 +20,15 @@ from aifund.strategies.base import PositionView, Strategy, StrategyContext
 
 LEAKAGE_NOTE = ("과거 구간 백테스트는 규칙 전략만 대상으로 하며, 과최적화·생존편향·체결 가정의 한계가 있습니다. "
                 "AI(B/C)는 과거 결과를 이미 알고 있을 수 있어 백테스트로 평가하지 않습니다.")
+
+
+def side_fee_rate(paper: PaperSettings, market: str) -> Decimal:
+    """백테스트 편도 비용률. 내부 모의체결과 같은 시장별 요율을 쓰고, 국내주식 매도세는 매수·매도에 절반씩 나눠 왕복 비용을 맞춘다."""
+    if market == "crypto":
+        return paper.fee_rate
+    if market == "kr_stock":
+        return paper.stock_fee_rate + paper.kr_sell_tax_rate / 2
+    return paper.us_fee_rate
 
 
 @dataclass

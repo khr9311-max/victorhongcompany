@@ -1,97 +1,152 @@
 {% extends "base.html" %}
+{% import "_ui.html" as ui %}
 {% block title %}개요{% endblock %}
-{% block head %}<meta http-equiv="refresh" content="30">{% endblock %}
+{% block head %}<noscript><meta http-equiv="refresh" content="30"></noscript>{% endblock %}
+{% block body_attrs %} data-refresh="30"{% endblock %}
 {% block content %}
 {% set c = d.capital %}
-<div class="card">
-  <h2>운용 현황 · {{ d.mode_label }} · 서비스 {{ d.status }}</h2>
-  <div class="kpis">
-    <div class="kpi"><div class="l">초기 배정 원금{% if mode != 'live' %}(가상){% endif %}</div><div class="v">{{ c.principal|krw }}</div></div>
-    <div class="kpi"><div class="l">총자산(평가)</div><div class="v">{{ c.equity|krw }}</div></div>
-    <div class="kpi"><div class="l">가용 현금</div><div class="v">{{ c.available|krw }}</div></div>
-    <div class="kpi"><div class="l">미체결 예약금</div><div class="v">{{ c.reserved|krw }}</div></div>
-    <div class="kpi"><div class="l">보유 평가액</div><div class="v">{{ c.positions|krw }}</div></div>
-    <div class="kpi"><div class="l">총노출(보유+매수예약)</div><div class="v">{{ c.exposure|krw }}</div></div>
-    <div class="kpi"><div class="l">거래비용 차감 손익</div><div class="v {{ 'ok' if c.pnl >= 0 else 'bad' }}">{{ c.pnl|krw(True) }}</div></div>
-    <div class="kpi"><div class="l">누적 거래비용(수수료)</div><div class="v">{{ c.fees|krw }}</div></div>
-    <div class="kpi"><div class="l">AI 운영비(별도 항목)</div><div class="v">{{ c.ai_cost|krw }}</div></div>
-    <div class="kpi"><div class="l">실험 전체 손익(AI비용 포함)</div><div class="v {{ 'ok' if c.experiment_pnl >= 0 else 'bad' }}">{{ c.experiment_pnl|krw(True) }}</div></div>
-    <div class="kpi"><div class="l">실현 / 미실현</div><div class="v small">{{ c.realized|krw(True) }} / {{ c.unrealized|krw(True) }}</div></div>
-    <div class="kpi"><div class="l">운용 설정</div><div class="v">{{ c.setting }}</div></div>
+<div class="page-head">
+  <div class="grow">
+    <h1>운용 현황</h1>
+    <p class="sub">{{ d.mode_label }} · 운용 설정 {{ c.setting|label('setting') }} · 서비스 {{ d.status|label('service') }} · 설정 v{{ d.settings_version }}</p>
   </div>
-  {% if c.stale %}<p class="warn small">평가 불완전: {{ c.stale|join(' · ') }}</p>{% endif %}
-  {% if c.risk %}
-  <p class="small">일 손익 {{ c.risk.daily_pnl|krw(True) }} (기준 {{ c.risk.day_kst }}) ·
-     고점 대비 낙폭 {{ c.risk.drawdown_pct|pct }} ·
-     일손실 정지 <b class="{{ 'bad' if c.risk.daily_stop_active else 'ok' }}">{{ '작동' if c.risk.daily_stop_active else '아님' }}</b> ·
-     낙폭 정지 <b class="{{ 'bad' if c.risk.drawdown_stop_active else 'ok' }}">{{ '작동' if c.risk.drawdown_stop_active else '아님' }}</b>
-     <span class="muted">(손실 제한은 신규 위험 증가를 멈추는 운영 기준이며 최대 손실을 보증하지 않습니다)</span></p>
-  {% endif %}
+  <div class="refresh small muted" data-refresh-status hidden><span></span><button type="button" class="ghost small"></button></div>
 </div>
 
-<div class="card">
-  <h2>시장·계좌 연결</h2>
-  <table>
-    <tr><th>시장</th><th>활성</th><th>데이터</th><th>주문 경로</th><th>계좌</th><th>장 상태</th><th>마지막 정상 스냅샷</th><th>마지막 시세</th><th>LIVE</th><th>대사</th></tr>
-    {% for m in d.markets %}
-    <tr>
-      <td>{{ m.market }}<div class="small muted">{{ m.instruments }}</div></td>
-      <td>{{ '예' if m.enabled else '아니오' }}</td>
-      <td class="{{ 'bad' if '미연결' in m.data else '' }}">{{ m.data }}</td>
-      <td class="{{ 'bad' if ('미연결' in m.broker_status or '미지원' in m.broker_status) else '' }}">{{ m.broker_status }}</td>
-      <td>{{ m.account }}</td><td>{{ m.session }}</td>
-      <td>{{ m.last_snapshot|kst }}</td><td>{{ m.last_quote|kst }}</td>
-      <td class="{{ 'bad' if m.live.startswith('LIVE') else 'muted' }}">{{ m.live }}</td>
-      <td>{% if m.reconciled is none %}-{% elif m.reconciled %}<span class="ok">완료</span>{% else %}<span class="bad">미완료(신규 주문 차단)</span>{% endif %}</td>
-    </tr>
-    {% endfor %}
-  </table>
-  <p class="small muted">환율: {{ d.fx }} · 시계 오차: {{ '%+.2f초'|format(d.clock_skew) if d.clock_skew is not none else '미측정' }} · 코드 {{ d.code_version }} · 설정 v{{ d.settings_version }}</p>
-  <details><summary class="small">자격증명 설정 상태(값은 표시하지 않음)</summary>
-    {% for k, v in d.secrets.items() %}<span class="chip">{{ k }}: {{ v }}</span>{% endfor %}</details>
+<section class="health" aria-label="상태 요약">
+  {% for h in d.health %}<div class="row {{ h.level }}"><i aria-hidden="true">{{ ui.icon(h.level) }}</i><div>{{ h.text }}</div></div>{% endfor %}
+</section>
+
+<div class="grid hero-grid">
+  <section class="card">
+    <div class="eyebrow">총자산(평가){% if mode != 'live' %} · 가상 원금 기준{% endif %}</div>
+    <div class="hero-value">{{ c.equity|krw }}</div>
+    {% set rate = (c.pnl / c.principal * 100) if c.principal else none %}
+    <div class="delta {{ 'up' if c.pnl > 0 else ('down' if c.pnl < 0 else 'flat') }}">
+      {{ '▲' if c.pnl > 0 else ('▼' if c.pnl < 0 else '■') }} {{ c.pnl|krw(True) }}{% if rate is not none %} ({{ '%+.2f'|format(rate) }}%){% endif %}
+      <span class="note">원금 대비 · 거래비용 차감</span>
+    </div>
+    <dl class="kv">
+      <dt>초기 배정 원금{% if mode != 'live' %}(가상){% endif %}</dt><dd>{{ c.principal|krw }}</dd>
+      {% if c.risk %}
+      <dt>오늘 손익</dt><dd>{{ ui.signed_krw(c.risk.daily_pnl) }} <span class="muted small">(기준일 {{ c.risk.day_kst }})</span></dd>
+      <dt>고점 대비 낙폭</dt><dd>{{ c.risk.drawdown_pct|pct }}</dd>
+      <dt>일손실 정지</dt><dd>{% if c.risk.daily_stop_active %}{{ ui.st('critical', '작동 중') }}{% else %}{{ ui.st('good', '아님') }}{% endif %}</dd>
+      <dt>낙폭 정지</dt><dd>{% if c.risk.drawdown_stop_active %}{{ ui.st('critical', '작동 중') }}{% else %}{{ ui.st('good', '아님') }}{% endif %}</dd>
+      {% endif %}
+    </dl>
+    <p class="small muted">손실 제한은 신규 위험 증가를 멈추는 운영 기준이며 최대 손실을 보증하지 않습니다.</p>
+  </section>
+  {{ ui.chart(d.equity_chart, 'equity', '평가자산 추이(운용 장부)', '최근 7일 · 원금 변경 이후 · 1분 기록을 구간별로 요약 · 회색 선은 원금',
+              '아직 평가 기록이 없습니다. 서비스가 실행되면 1분마다 기록이 쌓입니다.') }}
 </div>
 
-<div class="grid">
-  <div class="card">
-    <h2>보유 종목(운용 장부)</h2>
-    <table><tr><th>종목</th><th class="n">수량</th><th class="n">현재가</th><th class="n">평가액</th><th>전략별</th></tr>
+<section class="card">
+  <div class="card-head"><h2 class="grow">자금·손익 상세</h2><span class="small muted">숫자는 원장에서 직접 계산</span></div>
+  <div class="tiles">
+    <div class="tile"><div class="l">가용 현금</div><div class="v">{{ c.available|krw }}</div><div class="h">현금 − 미체결 예약금</div></div>
+    <div class="tile"><div class="l">미체결 예약금</div><div class="v">{{ c.reserved|krw }}</div></div>
+    <div class="tile"><div class="l">보유 평가액</div><div class="v">{{ c.positions|krw }}</div></div>
+    <div class="tile"><div class="l">총노출(보유+매수예약)</div><div class="v">{{ c.exposure|krw }}</div></div>
+    <div class="tile"><div class="l">거래비용 차감 손익</div><div class="v">{{ ui.signed_krw(c.pnl) }}</div></div>
+    <div class="tile"><div class="l">누적 거래비용(수수료)</div><div class="v">{{ c.fees|krw }}</div></div>
+    <div class="tile"><div class="l">AI 운영비(별도 항목)</div><div class="v">{{ c.ai_cost|krw }}</div></div>
+    <div class="tile"><div class="l">실험 전체 손익(AI비용 포함)</div><div class="v">{{ ui.signed_krw(c.experiment_pnl) }}</div></div>
+    <div class="tile"><div class="l">실현 / 미실현</div><div class="v sm">{{ ui.signed_krw(c.realized) }} / {{ ui.signed_krw(c.unrealized) }}</div></div>
+    <div class="tile"><div class="l">운용 설정</div><div class="v">{{ c.setting }}</div><div class="h">{{ c.setting|label('setting') }}</div></div>
+  </div>
+  {% if c.stale %}<p class="small">{{ ui.st('warning', '평가 불완전') }} {{ c.stale|join(' · ') }}</p>{% endif %}
+</section>
+
+<section class="card">
+  <div class="card-head"><div class="grow"><h2>자산 구성</h2><p class="sub">현금과 시장별 보유 평가액(원화 환산). 합계 = 총자산 {{ d.composition.total|krw }}</p></div></div>
+  <div class="stackbar" role="img" aria-label="자산 구성: {% for p in d.composition.parts %}{{ p.label }} {{ '%.1f'|format(p.pct) }}%{{ ', ' if not loop.last }}{% endfor %}">
+    {% for p in d.composition.parts if p.pct > 0 %}<span class="seg {{ 's' ~ p.slot if p.slot else 'neutral' }}" style="flex-grow:{{ '%.4f'|format(p.pct) }}" tabindex="0"
+      data-tip="{{ p.label }} {{ p.value|krw }} ({{ '%.1f'|format(p.pct) }}%)"></span>{% endfor %}
+  </div>
+  <ul class="legend">{% for p in d.composition.parts %}<li><span class="sw {{ 's' ~ p.slot if p.slot else 'neutral' }}"></span>{{ p.label }} <b>{{ p.value|krw }}</b> <span class="muted">{{ '%.1f'|format(p.pct) }}%</span></li>{% endfor %}</ul>
+  <p class="small muted" style="margin-top:10px">노출 — 자산군: {% for k, v in c.by_class.items() %}<span class="badge">{{ k }} {{ v|krw }}</span>{% else %}없음{% endfor %}
+    · 시장: {% for k, v in c.by_market.items() %}<span class="badge">{{ k|label('market') }} {{ v|krw }}</span>{% else %}없음{% endfor %}</p>
+</section>
+
+<div class="section-title"><h2>시장·계좌 연결</h2><span class="small muted">시장별 시세 원천, 주문 경로, 장 상태, 대사</span></div>
+<div class="grid g3">
+  {% for m in d.markets %}
+  <article class="card market {{ '' if m.enabled else 'disabled' }}">
+    <div class="market-head">
+      <span class="dot s{{ m.slot }}"></span><h3>{{ m.label }}</h3><span class="small muted">{{ m.market }}</span>
+      <span class="spacer"></span>{% if m.enabled %}{{ ui.st('good', '사용') }}{% else %}{{ ui.st('neutral', '사용 안 함') }}{% endif %}
+    </div>
+    <dl class="kv">
+      <dt>시세</dt><dd>{% if not m.enabled %}<span class="muted">{{ m.data }}</span>{% else %}{{ ui.yesno(m.data_ok, m.data, m.data) }}{% endif %}</dd>
+      <dt>주문 경로</dt><dd>{% if not m.enabled %}<span class="muted">{{ m.broker_status }}</span>{% else %}{{ ui.yesno(m.broker_ok, m.broker_status, m.broker_status) }}{% endif %}</dd>
+      <dt>계좌</dt><dd>{{ m.account }}</dd>
+      <dt>장 상태</dt><dd>{% if m.session_open %}{{ ui.st('good', m.session) }}{% else %}{{ m.session }}{% endif %}</dd>
+      <dt>마지막 정상 스냅샷</dt><dd>{{ m.last_snapshot|ago }} <span class="cell-sub">{{ m.last_snapshot|kst }}</span></dd>
+      <dt>마지막 시세</dt><dd>{{ m.last_quote|ago }} <span class="cell-sub">{{ m.last_quote|kst }}</span></dd>
+      <dt>LIVE</dt><dd>{% if m.live.startswith('LIVE') %}{{ ui.st('live', m.live) }}{% elif m.live == '비활성' %}<span class="muted">{{ m.live }}</span>{% else %}{{ ui.st('warning', m.live, 'wrap') }}{% endif %}</dd>
+      <dt>대사</dt><dd>{% if m.reconciled is none %}-{% elif m.reconciled %}{{ ui.st('good', '완료') }}{% else %}{{ ui.st('serious', '미완료(신규 주문 차단)') }}{% endif %}</dd>
+      <dt>배정</dt><dd><b>{{ m.allocation|krw }}</b></dd>
+      {% if m.enabled %}<dt>AI 연구</dt><dd>{{ m.ai_schedule }} · 최근 {{ m.last_research|ago }}</dd>{% endif %}
+    </dl>
+    <div class="chips" style="margin-top:10px">{% for sym in m.instrument_list %}<span class="badge strong">{{ sym }}</span>{% endfor %}</div>
+    {% if m.enabled and m.order_units %}<ul class="units">{% for unit in m.order_units %}<li>{{ unit }}</li>{% endfor %}</ul>{% endif %}
+  </article>
+  {% endfor %}
+</div>
+<p class="small muted" style="margin:10px 2px 0">환율: {{ d.fx }} · 시계 오차: {{ '%+.2f초'|format(d.clock_skew) if d.clock_skew is not none else '미측정' }} · 코드 {{ d.code_version }} · 설정 v{{ d.settings_version }}</p>
+<details class="small" style="margin:6px 2px 18px"><summary>자격증명 설정 상태(값은 표시하지 않음)</summary>
+  <div class="chips" style="margin-top:6px">{% for k, v in d.secrets.items() %}<span class="badge">{{ k }}: {% if v == '설정됨' %}<b class="ok">{{ v }}</b>{% else %}{{ v }}{% endif %}</span>{% endfor %}</div></details>
+
+<div class="grid g2">
+  <section class="card">
+    <div class="card-head"><h2 class="grow">보유 종목(운용 장부)</h2><a class="small" href="/strategies">전략별 보기 →</a></div>
+    <div class="tbl-wrap"><table><tr><th>종목</th><th class="n">수량</th><th class="n">현재가</th><th class="n">평가액</th><th>전략별</th></tr>
     {% for p in d.positions %}
-      <tr><td>{{ p.instrument_id }}</td><td class="n">{{ p.qty|num }}</td><td class="n">{{ p.price|num(2) }}</td>
+      <tr><td><b>{{ p.instrument_id.split(':', 1)[1] }}</b><span class="cell-sub">{{ p.instrument_id.split(':')[0]|label('market') }}</span></td>
+      <td class="n">{{ p.qty|num }}</td><td class="n">{{ p.price|num(2) }}</td>
       <td class="n">{{ p.value|num(0) }} {{ p.ccy }}</td><td class="small">{{ p.strategies|join(', ') }}</td></tr>
-    {% else %}<tr><td colspan="5" class="muted">보유 없음(현금 유지)</td></tr>{% endfor %}
-    </table>
-    <p class="small">노출: {% for k, v in c.by_class.items() %}<span class="chip">{{ k }} {{ v|krw }}</span>{% endfor %}
-      {% for k, v in c.by_market.items() %}<span class="chip">{{ k }} {{ v|krw }}</span>{% endfor %}</p>
-  </div>
-  <div class="card">
+    {% else %}<tr><td colspan="5" class="empty">보유 없음(현금 유지)</td></tr>{% endfor %}
+    </table></div>
+  </section>
+  <section class="card">
     <h2>제어 플래그·AI</h2>
-    {% for f in d.flags %}<div class="bad small">■ {{ f.key }} — {{ f.reason }} ({{ f.actor }}, {{ f.updated_at|kst }})</div>
-    {% else %}<div class="ok small">활성 정지·차단 플래그 없음</div>{% endfor %}
-    <p class="small">AI: <b class="{{ 'ok' if d.ai_status[0] else 'warn' }}">{{ d.ai_status[1] }}</b> ·
-       이번 달 {{ d.budget.settled_krw|krw }} 사용 + {{ d.budget.reserved_krw|krw }} 예약 / 한도 {{ d.budget.cap_krw|krw }}
-       {% if d.budget.estimated %}<span class="warn">(일부 추정)</span>{% endif %}</p>
-    {% if d.errors %}<p class="small bad">루프 오류: {% for k, v in d.errors.items() %}<br>{{ k }}: {{ v }}{% endfor %}</p>{% endif %}
-    <p class="small muted">최근 사이클: {% for m, lc in d.last_cycle.items() %}{{ m }} {{ lc.status }} ({{ lc.at|kst }}) {% endfor %}</p>
-  </div>
+    <div style="margin:10px 0">
+    {% for f in d.flags %}<div class="small" style="margin-bottom:4px">{{ ui.st('critical' if f.key.startswith(('recon_block', 'auth_error')) else 'serious', f.key|flag) }}
+      <span class="muted">{{ f.reason }} ({{ f.actor }}, {{ f.updated_at|kst }})</span></div>
+    {% else %}{{ ui.st('good', '활성 정지·차단 플래그 없음') }}{% endfor %}
+    </div>
+    <dl class="kv">
+      <dt>AI</dt><dd>{{ ui.yesno(d.ai_status[0], d.ai_status[1], d.ai_status[1]) }} <span class="cell-sub">{{ d.ai_label }}</span></dd>
+      <dt>이번 달 AI 비용</dt><dd>{{ d.budget.settled_krw|krw }} 사용 + {{ d.budget.reserved_krw|krw }} 예약 / 한도 {{ d.budget.cap_krw|krw }}
+        {% if d.budget.estimated %}<span class="warn">(일부 추정)</span>{% endif %}
+        {% set used = ((d.budget.settled_krw + d.budget.reserved_krw) / d.budget.cap_krw * 100) if d.budget.cap_krw else 0 %}
+        <div class="meter {{ 'critical' if used >= 100 else ('warning' if used >= 80 else '') }}" data-tip="월 한도의 {{ '%.1f'|format(used) }}% 사용·예약" tabindex="0"><span style="width:{{ '%.1f'|format([used, 100]|min) }}%"></span></div></dd>
+      <dt>최근 사이클</dt><dd>{% for m, lc in d.last_cycle.items() %}<div>{{ ui.market(m) }} <span class="small">{{ lc.status|label('cycle') }} · {{ lc.at|ago }}{% if lc.orders %} · 주문 {{ lc.orders }}건{% endif %}</span></div>{% else %}<span class="muted">이번 실행에서 아직 없음</span>{% endfor %}</dd>
+    </dl>
+    {% if d.errors %}<p class="small bad" style="margin-top:10px">루프 오류: {% for k, v in d.errors.items() %}<br>{{ k }}: {{ v }}{% endfor %}</p>{% endif %}
+  </section>
 </div>
 
-<div class="card">
-  <h2>최근 주문(운용 장부)</h2>
-  <table><tr><th>시각</th><th>종목</th><th>방향</th><th class="n">가격</th><th class="n">수량</th><th class="n">체결</th><th>상태</th><th>용도</th></tr>
+<section class="card" style="margin-top:14px">
+  <div class="card-head"><h2 class="grow">최근 주문(운용 장부)</h2><a class="small" href="/orders?book=operating">전체 주문 →</a></div>
+  <div class="tbl-wrap"><table><tr><th>시각</th><th>종목</th><th>방향</th><th class="n">가격</th><th class="n">수량</th><th class="n">체결</th><th>상태</th><th>용도</th></tr>
   {% for o in d.orders %}
-  <tr><td>{{ o.created_at|kst }}</td><td><a href="/orders/{{ o.order_id }}">{{ o.instrument_id }}</a></td><td>{{ '매수' if o.side=='buy' else '매도' }}</td>
+  <tr><td class="nowrap">{{ o.created_at|kst }}</td><td><a href="/orders/{{ o.order_id }}">{{ o.instrument_id }}</a></td><td>{{ ui.side(o.side) }}</td>
     <td class="n">{{ o.limit_price|num(4) }}</td><td class="n">{{ o.qty|num }}</td><td class="n">{{ o.filled_qty|num }}</td>
-    <td class="{{ 'bad' if o.status in ('unknown','rejected') else '' }}">{{ o.status|label('status') }}</td><td>{{ o.purpose }}</td></tr>
-  {% else %}<tr><td colspan="8" class="muted">주문 없음</td></tr>{% endfor %}
-  </table>
-</div>
+    <td>{{ ui.order_status(o.status) }}</td><td>{{ o.purpose|label('purpose') }}</td></tr>
+  {% else %}<tr><td colspan="8" class="empty">주문 없음</td></tr>{% endfor %}
+  </table></div>
+</section>
 
-<div class="card">
+<section class="card">
   <h2>사고·경보</h2>
-  <table><tr><th>시각</th><th>심각도</th><th>분류</th><th>내용</th><th>해소</th></tr>
+  <div class="tbl-wrap" style="margin-top:10px"><table><tr><th>시각</th><th>심각도</th><th>분류</th><th>내용</th><th>해소</th></tr>
   {% for i in d.incidents %}
-    <tr><td>{{ i.ts|kst }}</td><td class="{{ 'bad' if i.severity=='critical' else 'warn' }}">{{ i.severity }}</td><td>{{ i.category }}</td><td class="small">{{ i.detail }}</td><td>{{ i.resolved_at|kst }}</td></tr>
-  {% else %}<tr><td colspan="5" class="muted">없음</td></tr>{% endfor %}
-  </table>
-</div>
+    <tr><td class="nowrap">{{ i.ts|kst }}</td><td>{{ ui.st('critical' if i.severity == 'critical' else ('warning' if i.severity == 'warning' else 'neutral'), i.severity|label('severity')) }}</td>
+    <td>{{ i.category|label('incident') }}<span class="cell-sub">{{ i.category }}</span></td><td class="small">{{ i.detail }}</td>
+    <td class="nowrap">{% if i.resolved_at %}{{ ui.st('good', '해소') }}<span class="cell-sub">{{ i.resolved_at|kst }}</span>{% else %}<span class="muted">미해소</span>{% endif %}</td></tr>
+  {% else %}<tr><td colspan="5" class="empty">없음</td></tr>{% endfor %}
+  </table></div>
+</section>
 {% endblock %}

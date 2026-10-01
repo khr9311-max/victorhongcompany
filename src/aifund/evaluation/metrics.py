@@ -56,8 +56,7 @@ def book_metrics(ctx: AppContext, book_id: str) -> BookMetrics:
     setting = ctx.book_setting(book_id)
     val = value_book(db, ctx.ledger, book_id, ctx.price, ctx.market_store.instrument, ctx.fx, ctx.settings.risk)
     principal = ctx.ledger.principal(book_id)
-    fees = sum((D(r["delta"]) for r in db.query("SELECT delta FROM ledger_entries WHERE book_id=? AND kind='fee'", (book_id,))), ZERO)
-    fees = -fees
+    fees = val.fees_krw
     pnl_net = val.equity_krw - principal
     ai_cost = ctx.ai_cost_for_setting(setting) if book["kind"] != "baseline" else ZERO
     snaps = db.query("SELECT ts, equity_krw, positions_krw FROM equity_snapshots WHERE book_id=? AND stale=0 ORDER BY id", (book_id,))
@@ -74,10 +73,17 @@ def book_metrics(ctx: AppContext, book_id: str) -> BookMetrics:
     started = parse_iso(book["created_at"])
     days = (ctx.clock.now() - started).total_seconds() / 86400 if started else 0.0
     trades = int(db.scalar("SELECT COUNT(*) FROM fills f JOIN orders o ON o.order_id=f.order_id WHERE o.book_id=?", (book_id,)) or 0)
-    traded = sum((D(r["qty"]) * D(r["price"]) for r in db.query(
-        "SELECT f.qty, f.price FROM fills f JOIN orders o ON o.order_id=f.order_id WHERE o.book_id=?", (book_id,))), ZERO)
+    traded = ZERO
+    traded_known = True
+    for r in db.query("SELECT f.qty, f.price, o.instrument_id FROM fills f JOIN orders o ON o.order_id=f.order_id WHERE o.book_id=?", (book_id,)):
+        inst = ctx.market_store.instrument(r["instrument_id"])
+        amount, _ = ctx.fx.to_krw(D(r["qty"]) * D(r["price"]), inst.quote_ccy if inst else "unknown", ctx.settings.risk.max_fx_age_hours)
+        if amount is None:
+            traded_known = False
+        else:
+            traded += amount
     avg_eq = sum((D(s["equity_krw"]) for s in snaps), ZERO) / len(snaps) if snaps else None
-    turnover = (traded / avg_eq) if avg_eq else None
+    turnover = (traded / avg_eq) if avg_eq and traded_known else None
     faults = int(db.scalar("SELECT COUNT(*) FROM incidents WHERE book_id=? OR account_id=?", (book_id, book["account_id"])) or 0)
     trade_counts: dict[str, int] = {}
     for r in db.query("SELECT strategy_id, COUNT(*) FROM ledger_entries WHERE book_id=? AND kind='fill' AND asset NOT IN ('KRW','USD') "

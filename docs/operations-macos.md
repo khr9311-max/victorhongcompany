@@ -80,8 +80,10 @@ ssh -N -L 8765:127.0.0.1:8765 <맥북사용자>@<맥북주소>
 ```bash
 uname -m                                            # arm64 확인
 bash scripts/macos/setup.sh --dev                   # 테스트 도구 포함 설치
-PYTHONPATH=src .venv/bin/python -m pytest -q        # 전체 테스트(69개 통과 기대)
+PYTHONPATH=src .venv/bin/python -m pytest -q        # 전체 테스트(113개 통과 기대)
+# .env는 Git에 없습니다. Windows PC의 .env 값(Gemini·네이버·키움·텔레그램 등)을 안전한 방법으로 옮겨 넣으세요.
 bash scripts/macos/doctor.sh                        # ✘ 항목이 없어야 함(키 미설정은 '·' 정보)
+bash scripts/macos/aifund.sh kiwoom-check           # 키움 시세 조회 확인(주문 없음, 키움 키를 넣은 경우)
 bash scripts/macos/aifund.sh demo --hours 24        # 데모 시뮬레이션
 bash scripts/macos/install_launchd.sh --mode internal_paper
 launchctl print gui/$(id -u)/com.victorhong.aifund | grep -E "state|pid"   # state = running

@@ -1,7 +1,8 @@
 """운용 설정 모델.
 
 설정은 DB의 settings_versions에 버전으로 기록되며(변경 이력·적용 버전 추적),
-config/config.toml은 최초/명시적 가져오기 용도다. AI에는 설정 변경 경로가 없다.
+설정 파일(internal_paper·offline_demo는 config/paper.toml, 그 외는 config/config.toml)은
+바뀔 때마다 다음 시작 시 변경분이 반영된다(config/store.py). AI에는 설정 변경 경로가 없다.
 엔지니어링 프리셋은 검증된 최적 투자조건이 아니다.
 """
 
@@ -10,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import tomllib
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Literal
@@ -67,11 +69,12 @@ class RiskSettings(_Strict):
 
 class MarketSettings(_Strict):
     enabled: bool = False
-    broker: Literal["upbit", "kis"] = "upbit"
+    broker: Literal["upbit", "kis", "paper"] = "upbit"
+    data_provider: Literal["default", "kiwoom"] = "default"
     account_id: str = "upbit-main"
     instruments: list[str] = Field(default_factory=list)
     candle: str = "60m"  # 코인: "60m" 등 분봉, 주식: "1d"
-    allocation_krw: Decimal = Decimal("0")
+    allocation_krw: Decimal = Field(Decimal("0"), ge=0)
     decision_delay_sec: int = 20  # 봉 마감 후 대기(거래소 반영 지연 흡수)
     stock_decision_after_open_min: int = 10
 
@@ -140,11 +143,31 @@ class ModelPricing(_Strict):
     output_usd_per_mtok: Decimal
     source: str
     checked_at: str
+    # 공식 가격표에 예고된 요율 변경(예: 도입가 종료). changes_on(UTC 날짜)부터 new_* 요율로 계산한다.
+    changes_on: str | None = None
+    new_input_usd_per_mtok: Decimal | None = None
+    new_output_usd_per_mtok: Decimal | None = None
+
+    @model_validator(mode="after")
+    def _scheduled_change(self) -> "ModelPricing":
+        parts = (self.changes_on, self.new_input_usd_per_mtok, self.new_output_usd_per_mtok)
+        if any(p is not None for p in parts):
+            if not all(p is not None for p in parts):
+                raise ValueError("요율 변경은 changes_on·new_input_usd_per_mtok·new_output_usd_per_mtok를 함께 지정해야 합니다")
+            date.fromisoformat(self.changes_on)  # type: ignore[arg-type]  # YYYY-MM-DD 형식 검사
+        return self
+
+    def rates(self, at: datetime) -> tuple[Decimal, Decimal]:
+        """(입력, 출력) USD/백만 토큰. at 시점에 적용되는 요율."""
+        if self.changes_on is not None and at.astimezone(timezone.utc).date() >= date.fromisoformat(self.changes_on):
+            return self.new_input_usd_per_mtok, self.new_output_usd_per_mtok  # type: ignore[return-value]
+        return self.input_usd_per_mtok, self.output_usd_per_mtok
 
 
 class AISettings(_Strict):
     enabled: bool = True
-    provider: Literal["anthropic", "ollama", "disabled"] = "anthropic"
+    research_focus: str = Field("", max_length=1000)
+    provider: Literal["anthropic", "gemini", "ollama", "disabled"] = "anthropic"
     model: str = "claude-opus-5"
     effort: Literal["low", "medium", "high", "xhigh", "max"] = "medium"
     use_server_fallbacks: bool = True
@@ -154,17 +177,32 @@ class AISettings(_Strict):
     timeout_sec: float = 120.0
     max_retries: int = Field(1, ge=0, le=3)
     fallback_usdkrw: Decimal = Decimal("1500")
+    # 정기 연구 일정: 코인은 daily_research_time_kst부터 crypto_research_interval_hours마다,
+    # 주식은 거래일마다 정규장 시작 stock_research_lead_min분 전(판단 직전 자료로 연구·검증).
     daily_research_time_kst: str = "08:50"
+    crypto_research_interval_hours: int = Field(24, ge=1, le=24)
+    stock_research_lead_min: int = Field(30, ge=5, le=240)
+    max_news_items: int = Field(40, ge=5, le=200)  # 연구 입력에 넣는 최근 48시간 뉴스·공시 최대 개수
     weekly_review_weekday: int = Field(0, ge=0, le=6)  # 0=월요일
     weekly_review_time_kst: str = "09:10"
     event_move_pct: Decimal = Decimal("5")
-    max_event_calls_per_day: int = 1
+    max_event_calls_per_day: int = Field(1, ge=0, le=24)
     independent_review_pass: bool = True
     veto_rule_buys: bool = True
     report_ttl_hours: int = Field(24, ge=1, le=72)
     when_unavailable: Literal["continue_rules", "hold_new_risk"] = "continue_rules"
     pricing: dict[str, ModelPricing] = Field(
         default_factory=lambda: {
+            # 출처: https://ai.google.dev/gemini-api/docs/pricing (2026-09-24 갱신본, 2026-09-30 확인). 출력에 추론 토큰 포함
+            "gemini-3.8-flash": ModelPricing(
+                input_usd_per_mtok=Decimal("0.75"), output_usd_per_mtok=Decimal("3.75"),
+                source="https://ai.google.dev/gemini-api/docs/pricing", checked_at="2026-09-30",
+                changes_on="2027-01-01", new_input_usd_per_mtok=Decimal("1.50"), new_output_usd_per_mtok=Decimal("7.50"),
+            ),
+            "gemini-3.5-flash-lite": ModelPricing(
+                input_usd_per_mtok=Decimal("0.30"), output_usd_per_mtok=Decimal("2.50"),
+                source="https://ai.google.dev/gemini-api/docs/pricing", checked_at="2026-09-29",
+            ),
             # 출처: https://platform.claude.com/docs/en/about-claude/pricing (2026-09-29 확인)
             "claude-opus-5": ModelPricing(
                 input_usd_per_mtok=Decimal("5"), output_usd_per_mtok=Decimal("25"),
@@ -253,8 +291,21 @@ class NewsSettings(_Strict):
             )
         ]
     )
+    naver_enabled: bool = False
+    # 시장별 네이버 뉴스 검색어. 뉴스 수집 주기마다 검색어 1개당 1회 호출(무료 한도 하루 25,000회).
+    naver_queries: dict[MarketName, list[str]] = Field(default_factory=lambda: {"crypto": ["비트코인", "이더리움", "리플"]})
     dart_enabled: bool = False
     max_items_per_feed: int = 30
+
+    @field_validator("naver_queries")
+    @classmethod
+    def _queries(cls, v: dict[str, list[str]]) -> dict[str, list[str]]:
+        for market, queries in v.items():
+            if len(queries) > 10:
+                raise ValueError(f"네이버 검색어는 시장별 최대 10개입니다({market}: {len(queries)}개)")
+            if any(not q.strip() or len(q) > 100 for q in queries):
+                raise ValueError("네이버 검색어는 비어 있지 않은 100자 이내여야 합니다")
+        return v
 
 
 class NotifySettings(_Strict):
@@ -298,6 +349,9 @@ class Settings(_Strict):
 
     @model_validator(mode="after")
     def _allocations(self) -> "Settings":
+        for market, config in self.markets.items():
+            if config.data_provider == "kiwoom" and (market not in ("kr_stock", "us_stock") or config.candle != "1d"):
+                raise ValueError("키움 조회는 국내·미국주식 일봉만 지원합니다")
         total = sum((m.allocation_krw for m in self.markets.values() if m.enabled), Decimal(0))
         if total > self.risk.principal_cap_krw:
             raise ValueError("시장별 배정 합계가 원금 한도를 넘습니다")
@@ -319,6 +373,7 @@ class Settings(_Strict):
         return {
             "market": market,
             "broker": m.broker,
+            "data_provider": m.data_provider,
             "account_id": m.account_id,
             "instruments": sorted(m.instruments),
             "allocation_krw": str(m.allocation_krw),

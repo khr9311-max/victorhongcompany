@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from importlib import resources
 from typing import Any
 from urllib.parse import quote
@@ -17,10 +18,11 @@ from aifund.control import actions
 from aifund.control.readiness import disable_live, enable_live, live_readiness
 from aifund.control.selftest import run_selftest
 from aifund.core.money import D, fmt_krw, fmt_num
-from aifund.core.timeutil import kst_str
+from aifund.core.paths import MODE_LABELS
+from aifund.core.timeutil import kst_str, parse_iso
 from aifund.evaluation import candidates as cand
 from aifund.service.context import AppContext
-from aifund.web import views
+from aifund.web import charts, labels, views
 from aifund.web.auth import COOKIE, check_host, make_session, read_session, token_ok
 
 log = logging.getLogger(__name__)
@@ -42,6 +44,36 @@ def _num(v: Any, nd: int = 8) -> str:
         return str(v)
 
 
+def ago_text(value: Any, now: datetime) -> str:
+    """'3분 전'처럼 지금 기준 경과 시간(미래면 '… 후')."""
+    dt = parse_iso(value) if isinstance(value, str) else value
+    if not dt:
+        return "-"
+    sec = (now - dt).total_seconds()
+    suffix = "전" if sec >= 0 else "후"
+    sec = abs(sec)
+    if sec < 45:
+        return "방금" if suffix == "전" else "곧"
+    for unit, size in (("일", 86400), ("시간", 3600), ("분", 60)):
+        if sec >= size:
+            return f"{int(sec // size)}{unit} {suffix}"
+    return f"{int(sec)}초 {suffix}"
+
+
+def krw_short(v: Any) -> str:
+    """큰 원화 금액 요약(예: 5,012,300 → 501.2만원). 정확한 값은 옆에 전체 금액으로 함께 표시한다."""
+    if v is None or v == "":
+        return "-"
+    x = D(v)
+    sign = "-" if x < 0 else ""
+    x = abs(x)
+    if x >= 100_000_000:
+        return f"{sign}{x / 100_000_000:,.2f}억원"
+    if x >= 10_000:
+        return f"{sign}{x / 10_000:,.1f}만원"
+    return f"{sign}{x:,.0f}원"
+
+
 def create_app(ctx: AppContext, runtime: Any = None) -> FastAPI:
     app = FastAPI(title="빅터홍컴퍼니 AI 투자회사", docs_url=None, redoc_url=None, openapi_url=None)
     tpl_dir = resources.files("aifund.web").joinpath("templates")
@@ -51,6 +83,9 @@ def create_app(ctx: AppContext, runtime: Any = None) -> FastAPI:
         "krw": lambda v, sign=False: fmt_krw(D(v), sign) if v is not None and v != "" else "-",
         "num": _num, "kst": lambda v: kst_str(v) if v else "-", "pct": _fmt_pct,
         "label": lambda v, kind: views.LABELS.get(kind, {}).get(v, v),
+        "ago": lambda v: ago_text(v, ctx.clock.now()), "krw_short": krw_short,
+        "trigger": labels.trigger_label, "flag": labels.flag_label, "chart": charts.spec_json,
+        "hhmm": lambda v: kst_str(v, with_seconds=False)[5:-4] if v else "-",
     })
     app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
     web = ctx.settings.web
@@ -81,7 +116,9 @@ def create_app(ctx: AppContext, runtime: Any = None) -> FastAPI:
     def render(request: Request, name: str, sess: dict[str, Any] | None, **data: Any) -> HTMLResponse:
         base = {"request": request, "mode": ctx.mode, "sess": sess, "csrf": (sess or {}).get("csrf", ""),
                 "msg": request.query_params.get("msg"), "err": request.query_params.get("err"),
-                "demo": ctx.mode == "offline_demo", "live": ctx.mode == "live", "L": views.LABELS}
+                "demo": ctx.mode == "offline_demo", "live": ctx.mode == "live", "L": views.LABELS,
+                "mode_label": MODE_LABELS[ctx.mode], "path": request.url.path, "now": ctx.clock.now(),
+                "service_status": runtime.status if runtime else None}
         return templates.TemplateResponse(request, name, base | data)
 
     def back(path: str, msg: str | None = None, err: str | None = None) -> RedirectResponse:
@@ -283,11 +320,18 @@ FORM_FIELDS: dict[str, str] = {
     "ai.monthly_budget_krw": "ai.monthly_budget_krw",
     "ai.max_output_tokens": "ai.max_output_tokens",
     "ai.daily_research_time_kst": "ai.daily_research_time_kst",
+    "ai.crypto_research_interval_hours": "ai.crypto_research_interval_hours",
+    "ai.stock_research_lead_min": "ai.stock_research_lead_min",
+    "ai.max_event_calls_per_day": "ai.max_event_calls_per_day",
+    "ai.max_news_items": "ai.max_news_items",
+    "ai.max_input_chars": "ai.max_input_chars",
+    "ai.timeout_sec": "ai.timeout_sec",
     "ai.when_unavailable": "ai.when_unavailable",
     "ai.veto_rule_buys": "ai.veto_rule_buys",
     "ai.independent_review_pass": "ai.independent_review_pass",
     "schedule.quote_poll_sec": "schedule.quote_poll_sec",
     "schedule.order_poll_sec": "schedule.order_poll_sec",
+    "news.naver_enabled": "news.naver_enabled",
     "notify.telegram": "notify.telegram",
     "notify.webhook": "notify.webhook",
     "notify.min_severity": "notify.min_severity",
@@ -323,8 +367,18 @@ def apply_form(current: Settings, form: dict[str, str]) -> Settings:
             m["instruments"] = [x.strip() for x in form[f"m.{market}.instruments"].split(",") if x.strip()]
         if form.get(f"m.{market}.allocation_krw"):
             m["allocation_krw"] = form[f"m.{market}.allocation_krw"]
+        if form.get(f"m.{market}.data_provider"):
+            m["data_provider"] = form[f"m.{market}.data_provider"]
         if form.get(f"m.{market}.account_id"):
             m["account_id"] = form[f"m.{market}.account_id"].strip()
+        if form.get(f"n.{market}.queries") is not None:
+            queries = [x.strip() for x in form[f"n.{market}.queries"].split(",") if x.strip()]
+            if queries:
+                data["news"]["naver_queries"][market] = queries
+            else:
+                data["news"]["naver_queries"].pop(market, None)
+    if "ai.research_focus" in form:  # 비워서 저장하면 관심사 지시를 없앤다
+        data["ai"]["research_focus"] = form["ai.research_focus"].strip()
     for sid in ("trend_sma", "mean_reversion", "ai_research"):
         if form.get(f"sleeve.{sid}"):
             data["strategies"]["sleeves"][sid] = form[f"sleeve.{sid}"]

@@ -18,3 +18,6 @@ __pycache__/
 build/
 dist/
 .DS_Store
+
+# 구글 드라이브 동기화 임시 폴더
+.tmp.driveupload/

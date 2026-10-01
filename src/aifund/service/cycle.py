@@ -14,6 +14,7 @@ from decimal import Decimal
 from typing import Any
 
 from aifund.brokers.upbit import UpbitMarketData
+from aifund.config.settings import RiskSettings
 from aifund.core.ids import new_id
 from aifund.core.money import ZERO, ceil_step, dstr, floor_step
 from aifund.core.timeutil import to_iso
@@ -42,6 +43,14 @@ class CycleResult:
     snapshot_id: str | None = None
     notes: list[str] = field(default_factory=list)
     orders: list[dict[str, Any]] = field(default_factory=list)
+
+
+def order_cap_krw(risk: RiskSettings, inst: Instrument) -> Decimal:
+    """전략이 한 번에 요청할 수 있는 주문 금액(원). 위험 검사 한도의 98%, 외화는 환율 여유만큼 더 낮춘다."""
+    cap = risk.max_order_notional_krw * Decimal("0.98")
+    if inst.quote_ccy != "KRW":
+        cap /= 1 + risk.fx_haircut_pct / 100
+    return cap
 
 
 def limit_price(inst: Instrument, q: Quote, side: Side, offset_bps: Decimal) -> Decimal | None:
@@ -113,7 +122,7 @@ class DecisionCycle:
         now = ctx.clock.now()
         ctx.db.execute("INSERT INTO cycles(cycle_id, market, started_at, status) VALUES (?,?,?,?)", (cid, market, to_iso(now), "running"))
         res = CycleResult(cid, market, "running")
-        if mr is None or mr.collector is None:
+        if mr is None or mr.collector is None or not s.markets[market].enabled:
             res.status = "skipped_no_data"
             res.notes.append(mr.data_reason if mr else "시장 비활성")
             self._finish(res)
@@ -128,6 +137,14 @@ class DecisionCycle:
             return res
         res.snapshot_id = snap.snapshot_id
         self.last_snapshots[market] = snap
+        if market == "us_stock":
+            from aifund.service.paper_fx import fund_us_paper
+
+            # 모의체결 장부만 원화→달러 모의 환전(실계좌 브로커는 fund_us_paper가 건너뜀)
+            for book_id in (OPERATING, *ctx.shadow_executors):
+                executor = ctx.executor_for(book_id, market)
+                if executor is not None:
+                    fund_us_paper(ctx, book_id, executor)
         intraday = s.markets[market].candle != "1d"  # type: ignore[index]
         if snap.candle_close_time is not None and trigger == "candle" and intraday:
             # 일봉(주식)은 수집기가 '직전 거래일 종가 확정 여부'로 지연을 판정한다(주말·휴장 고려)
@@ -220,7 +237,7 @@ class DecisionCycle:
 
         def sleeve_equity(strategy_id: str, iid: str) -> Decimal | None:
             w = s.strategies.sleeves.get(strategy_id, ZERO)
-            st = val.by_strategy.get(strategy_id, {})
+            st = val.by_market_strategy.get(market, {}).get(strategy_id, {})
             krw = w * capital + st.get("realized", ZERO) + st.get("unrealized", ZERO)
             return self._to_quote(krw, instruments[iid])
 
@@ -233,7 +250,7 @@ class DecisionCycle:
             ref_price=lambda iid: (snap.items[iid].quote.mid if snap.items.get(iid) and snap.items[iid].quote else None),
             instruments=instruments,
             rebalance_threshold_quote=quote_amt(s.strategies.rebalance_threshold_krw),
-            max_order_quote=lambda iid: self._to_quote(s.risk.max_order_notional_krw * Decimal("0.98"), instruments[iid]),
+            max_order_quote=lambda iid: self._to_quote(order_cap_krw(s.risk, instruments[iid]), instruments[iid]),
             block_buys_reason=lambda iid: ai_hold,
         )
         expires = now + timedelta(seconds=s.risk.max_signal_age_sec)
@@ -380,7 +397,7 @@ class DecisionCycle:
                     continue
                 inst = it.instrument
                 px = it.quote.mid
-                amt = self._to_quote(min(per, s.risk.max_order_notional_krw * Decimal("0.98")), inst)
+                amt = self._to_quote(min(per, order_cap_krw(s.risk, inst)), inst)
                 if amt is None:
                     continue
                 qty = floor_step(amt / px, inst.qty_step)

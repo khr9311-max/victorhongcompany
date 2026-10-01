@@ -1,6 +1,7 @@
-# 빅터홍컴퍼니 AI 투자회사 — 설정 예제
-# `aifund setup`이 config/config.toml로 복사합니다. 파일이 바뀌면 다음 시작 시 새 설정 버전으로 기록됩니다.
-# 대시보드·CLI(`aifund settings set`)로 바꾼 값도 버전으로 남습니다. AI는 설정을 바꿀 수 없습니다.
+# 빅터홍컴퍼니 AI 투자회사 — 설정 예제(LIVE·broker_sandbox용 config/config.toml의 원본)
+# `aifund setup`이 config/config.toml로 복사합니다. 내부 모의·데모는 config/paper.toml을 씁니다.
+# 파일이 바뀌면 다음 시작 때 '바뀐 항목만' 새 설정 버전으로 반영되고, 대시보드·CLI로 바꾼 다른 값은 유지됩니다.
+# 모든 변경은 버전으로 남습니다. AI는 설정을 바꿀 수 없습니다.
 # 아래 값은 '엔지니어링 프리셋'이며 검증된 최적 투자조건이 아닙니다.
 
 operating_setting = "A"          # 실제 주문에 쓰는 단일 설정: A(규칙만) / B(+연구 AI) / C(+연구·검증 AI)
@@ -35,6 +36,7 @@ allocation_krw = "300000"
 [markets.kr_stock]
 enabled = false
 broker = "kis"
+data_provider = "default"         # 시세: default=KIS, kiwoom=키움 REST 조회(주문은 여전히 KIS, 일봉만)
 account_id = "kis-main"
 instruments = ["005930"]
 candle = "1d"
@@ -43,6 +45,7 @@ allocation_krw = "0"
 [markets.us_stock]
 enabled = false
 broker = "kis"
+data_provider = "default"         # kiwoom 선택 시 NASD:/NYSE:/AMEX: 식별자를 키움 거래소 코드로 변환
 account_id = "kis-main"
 instruments = ["NASD:AAPL"]
 candle = "1d"
@@ -63,13 +66,17 @@ params = { bb_period = 20, bb_k = "2.0", rsi_entry = "30", rsi_exit = "55", stop
 
 [ai]
 enabled = true
-provider = "anthropic"            # anthropic / ollama / disabled
-model = "claude-opus-5"           # 비용을 줄이려면 claude-sonnet-5 또는 claude-haiku-4-5 (요율 표에 있어야 호출됨)
-effort = "medium"
-use_server_fallbacks = true       # 모델 거절 시 서버측 폴백(비용은 실제 사용 모델 요율로 정산)
-monthly_budget_krw = "5000"
-max_output_tokens = 4000
-daily_research_time_kst = "08:50"
+provider = "anthropic"            # anthropic / gemini / ollama / disabled — 모델도 같은 공급자 것으로
+model = "claude-opus-5"           # 다른 선택: claude-sonnet-5·claude-haiku-4-5, 또는 provider="gemini" + gemini-3.8-flash / gemini-3.5-flash-lite
+research_focus = ""               # 연구·검증 AI에 전달할 대표의 관심사(예: "AI·반도체 우선 검토"). 매매 권한 없음
+effort = "medium"                 # Claude effort / Gemini 추론 강도(thinkingLevel: low·medium·high)
+use_server_fallbacks = true       # Claude 전용: 모델 거절 시 서버측 폴백(비용은 실제 사용 모델 요율로 정산)
+monthly_budget_krw = "5000"       # 월 AI 비용 상한(예약 기준)
+max_output_tokens = 4000          # 추론 토큰 포함 상한
+max_news_items = 40               # 연구에 넣는 최근 48시간 뉴스·공시 수
+daily_research_time_kst = "08:50" # 코인 정기 연구 기준 시각
+crypto_research_interval_hours = 24 # 코인 정기 연구 간격(24 = 하루 1회)
+stock_research_lead_min = 30      # 주식: 거래일 개장 몇 분 전에 연구할지
 weekly_review_weekday = 0         # 월요일
 weekly_review_time_kst = "09:10"
 event_move_pct = "5"
@@ -79,8 +86,21 @@ veto_rule_buys = true
 when_unavailable = "continue_rules"   # 또는 hold_new_risk
 fallback_usdkrw = "1500"
 
-# 요율 표(USD/백만 토큰). 출처: https://platform.claude.com/docs/en/about-claude/pricing (2026-09-29 확인)
-# 표에 없는 모델은 유료 자동 호출을 하지 않습니다.
+# 요율 표(USD/백만 토큰, Gemini 출력은 추론 토큰 포함). 표에 없는 모델은 유료 자동 호출을 하지 않습니다.
+# 출처: Gemini https://ai.google.dev/gemini-api/docs/pricing (2026-09-24 갱신본), Claude https://platform.claude.com/docs/en/about-claude/pricing
+[ai.pricing."gemini-3.8-flash"]
+input_usd_per_mtok = "0.75"       # 도입가(2026-12-31까지)
+output_usd_per_mtok = "3.75"
+source = "https://ai.google.dev/gemini-api/docs/pricing"
+checked_at = "2026-09-30"
+changes_on = "2027-01-01"         # 이날부터 표준가로 자동 계산
+new_input_usd_per_mtok = "1.50"
+new_output_usd_per_mtok = "7.50"
+[ai.pricing."gemini-3.5-flash-lite"]
+input_usd_per_mtok = "0.30"
+output_usd_per_mtok = "2.50"
+source = "https://ai.google.dev/gemini-api/docs/pricing"
+checked_at = "2026-09-29"
 [ai.pricing."claude-opus-5"]
 input_usd_per_mtok = "5"
 output_usd_per_mtok = "25"
@@ -127,6 +147,14 @@ fx_poll_min = 60
 
 [fx]
 provider = "frankfurter"          # frankfurter / manual / none
+
+[news]
+naver_enabled = false             # true로 켜려면 .env에 NAVER_CLIENT_ID/SECRET. 기본 CoinDesk RSS는 코드 기본값으로 수집
+dart_enabled = false              # 국내 공시(DART_API_KEY 필요)
+[news.naver_queries]              # 시장별 최대 10개, 뉴스 수집 주기마다 검색어 1개당 1회 호출
+crypto = ["비트코인", "이더리움", "리플"]
+# kr_stock = ["삼성전자 반도체"]
+# us_stock = ["엔비디아 AI"]
 
 [notify]
 telegram = false

@@ -10,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 # 테스트 중에는 실제 비밀값을 절대 읽지 않는다
 for k in list(os.environ):
-    if k.startswith(("UPBIT_", "KIS_", "ANTHROPIC_", "AIFUND_", "DART_")):
+    if k.startswith(("UPBIT_", "KIS_", "KIWOOM_", "ANTHROPIC_", "AIFUND_", "DART_", "GEMINI_", "NAVER_")):
         del os.environ[k]
 
 

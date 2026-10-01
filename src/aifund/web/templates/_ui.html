@@ -1,0 +1,57 @@
+{# 화면 공용 조각. 상태는 항상 아이콘 + 문구로 표시한다(색만으로 구분하지 않음). #}
+{% macro icon(level) -%}
+{{ {'good': '✓', 'warning': '!', 'serious': '▲', 'critical': '✕', 'live': '●'}.get(level, '•') }}
+{%- endmacro %}
+
+{% macro st(level, text, cls='') -%}
+<span class="st st-{{ level }} {{ cls }}"><i aria-hidden="true">{{ icon(level) }}</i>{{ text }}</span>
+{%- endmacro %}
+
+{% macro yesno(ok, yes_text, no_text, no_level='warning') -%}
+{% if ok %}{{ st('good', yes_text) }}{% else %}{{ st(no_level, no_text) }}{% endif %}
+{%- endmacro %}
+
+{% macro order_status(status) -%}
+{% set lv = {'filled': 'good', 'cancel_pending': 'warning', 'unknown': 'serious', 'rejected': 'critical'}.get(status, 'neutral') %}
+{{ st(lv, status|label('status')) }}
+{%- endmacro %}
+
+{% macro side(s) -%}
+<span class="badge strong">{{ '매수' if s == 'buy' else '매도' }}</span>
+{%- endmacro %}
+
+{% macro stance(v) -%}
+{% set lv = {'favorable': 'good', 'unfavorable': 'serious'}.get(v, 'neutral') %}
+{{ st(lv, v|label('stance')) }}
+{%- endmacro %}
+
+{% macro action(a) -%}
+{% set lv = {'buy': 'good', 'sell': 'serious', 'reduce': 'warning'}.get(a, 'neutral') %}
+{{ st(lv, a|label('action')) }}
+{%- endmacro %}
+
+{% macro market(m, slot=None) -%}
+<span class="row-gap nowrap" style="gap:6px"><span class="dot s{{ slot or {'crypto': 1, 'kr_stock': 2, 'us_stock': 3}.get(m, 0) }}"></span>{{ m|label('market') }}</span>
+{%- endmacro %}
+
+{% macro signed_krw(v) -%}
+<span class="{{ 'pos' if v > 0 else ('neg' if v < 0 else '') }}">{{ v|krw(True) }}</span>
+{%- endmacro %}
+
+{% macro chart(spec, id, title, sub, empty, height=220) -%}
+<figure class="card chart" data-chart="line" tabindex="0" aria-label="{{ title }} — 좌우 화살표로 시점 이동" data-empty="{{ empty }}">
+  <figcaption class="card-head">
+    <div class="grow"><h2>{{ title }}</h2><p class="sub">{{ sub }}</p></div>
+    {% if spec.series|length > 1 %}<ul class="legend">{% for s in spec.series %}<li><span class="sw line s{{ s.slot }}"></span>{{ s.label }}</li>{% endfor %}</ul>{% endif %}
+  </figcaption>
+  <div class="chart-plot" style="height:{{ height }}px"></div>
+  <script type="application/json" class="chart-data">{{ spec|chart|safe }}</script>
+  <details class="table-view"><summary>표로 보기({{ spec.table|length }}개 시점)</summary>
+    <div class="tbl-wrap"><table>
+      <tr><th>시각(KST)</th>{% for c in spec.columns %}<th class="n">{{ c }}</th>{% endfor %}</tr>
+      {% for r in spec.table %}<tr><td class="nowrap">{{ r.t|kst }}</td>{% for v in r['values'] %}<td class="n">{% if v is none %}-{% elif spec.format == 'pct' %}{{ '%+.2f'|format(v) }}%{% else %}{{ v|krw }}{% endif %}</td>{% endfor %}</tr>
+      {% else %}<tr><td colspan="{{ spec.columns|length + 1 }}" class="empty">기록 없음</td></tr>{% endfor %}
+    </table></div>
+  </details>
+</figure>
+{%- endmacro %}

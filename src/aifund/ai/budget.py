@@ -59,14 +59,14 @@ class AIBudget:
     def max_known_rates(self) -> tuple[Decimal, Decimal]:
         if not self.s.pricing:
             raise PricingMissing("요율 미설정")
-        return (max(p.input_usd_per_mtok for p in self.s.pricing.values()),
-                max(p.output_usd_per_mtok for p in self.s.pricing.values()))
+        rates = [p.rates(self.clock.now()) for p in self.s.pricing.values()]
+        return max(r[0] for r in rates), max(r[1] for r in rates)
 
     def estimate_usd(self, model: str, input_tokens: int, max_output_tokens: int, fallbacks: bool) -> Decimal:
         p = self.pricing_for(model)
         if p is None:
             raise PricingMissing(f"모델 {model}의 요율이 설정되지 않았습니다")
-        in_rate, out_rate = p.input_usd_per_mtok, p.output_usd_per_mtok
+        in_rate, out_rate = p.rates(self.clock.now())
         if fallbacks:
             # 폴백 모델이 더 비쌀 가능성까지 보수적으로 예약
             mi, mo = self.max_known_rates()
@@ -86,7 +86,7 @@ class AIBudget:
                 except PricingMissing:
                     in_rate, out_rate = Decimal(15), Decimal(75)
             else:
-                in_rate, out_rate = p.input_usd_per_mtok, p.output_usd_per_mtok
+                in_rate, out_rate = p.rates(self.clock.now())  # 예고된 요율 변경일 이후면 새 요율
             # 캐시 읽기·쓰기는 보수적으로 기본 입력 요율(쓰기는 1.25배)로 계산
             inp = Decimal(u.input_tokens) + Decimal(u.cache_read_tokens) + Decimal(u.cache_write_tokens) * Decimal("1.25")
             total += (inp * in_rate + Decimal(u.output_tokens) * out_rate) / MTOK

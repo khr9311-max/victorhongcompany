@@ -3,29 +3,45 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
 <title>{% block title %}AI 투자회사{% endblock %} · 빅터홍컴퍼니</title>
-<link rel="stylesheet" href="/static/style.css">
+<script>try{var t=localStorage.getItem("aifund.theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t)}catch(e){}</script>
+<link rel="stylesheet" href="/static/style.css?v=4">
+<script defer src="/static/app.js?v=4"></script>
 {% block head %}{% endblock %}
 </head>
-<body>
+<body{% block body_attrs %}{% endblock %}>
+{% import "_ui.html" as ui %}
+<a class="skip" href="#main">본문으로 건너뛰기</a>
 {% if mode == "offline_demo" %}<div class="banner demo">오프라인 데모 — 가짜(합성) 데이터입니다. 실제 시세·실제 거래가 아닙니다.</div>
 {% elif mode == "internal_paper" %}<div class="banner paper">내부 모의체결 — 실제 공개 시세로 가상 체결합니다. 실거래 체결과 다를 수 있습니다.</div>
 {% elif mode == "broker_sandbox" %}<div class="banner sandbox">증권사 공식 모의투자 환경</div>
 {% elif mode == "live" %}<div class="banner live">실거래 모드 — LIVE가 활성화된 시장은 실제 계좌로 주문합니다.</div>{% endif %}
-<header>
-  <span class="brand">빅터홍컴퍼니 AI 투자회사</span>
-  <nav>
-    <a href="/">개요</a><a href="/strategies">전략·비교</a><a href="/research">연구·검증</a><a href="/orders">주문·대사</a><a href="/control">제어</a><a href="/settings">설정</a>
-  </nav>
-  <span style="margin-left:auto" class="small muted">
-  {% if sess %}로그인됨 <form class="inline" method="post" action="/logout"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="secondary">로그아웃</button></form>
-  {% else %}<a href="/login">관리자 로그인</a>(제어·설정 변경에 필요){% endif %}
-  </span>
+<div class="chrome">
+<header class="topbar">
+  <a class="brand" href="/"><span class="logo" aria-hidden="true">V</span><span>빅터홍컴퍼니 <b>AI 투자회사</b></span></a>
+  <span class="mode-badge mode-{{ mode }}" title="운용 모드">{{ mode_label }}</span>
+  {% if service_status == "running" %}{{ ui.st('good', '서비스 실행 중') }}
+  {% elif service_status %}{{ ui.st('warning', '서비스 ' ~ service_status|label('service')) }}
+  {% else %}<span title="이 화면은 대시보드만 띄운 상태입니다. 수집·판단·주문은 `aifund run`으로 서비스를 실행해야 동작합니다.">{{ ui.st('warning', '대시보드만 실행 중') }}</span>{% endif %}
+  <span class="spacer"></span>
+  <button type="button" class="ghost small" data-theme-toggle title="화면 테마(자동은 운영체제 설정을 따름)">테마: 자동</button>
+  {% if sess %}<span class="small muted">관리자 로그인됨</span>
+    <form class="inline" method="post" action="/logout"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="secondary small">로그아웃</button></form>
+  {% else %}<a class="btn small" href="/login" title="제어·설정 변경에 필요">관리자 로그인</a>{% endif %}
 </header>
-<main>
-{% if msg %}<div class="msg info">{{ msg }}</div>{% endif %}
-{% if err %}<div class="msg err">{{ err }}</div>{% endif %}
+<nav class="tabs" aria-label="주요 화면">
+  {% for href, text in [("/", "개요"), ("/strategies", "전략·비교"), ("/research", "연구·검증"), ("/orders", "주문·대사"), ("/control", "제어"), ("/settings", "설정")] %}
+  {% set on = (path == href) or (href != "/" and path.startswith(href)) %}
+  <a href="{{ href }}" class="{{ 'active' if on }}" {% if on %}aria-current="page"{% endif %}>{{ text }}</a>
+  {% endfor %}
+</nav>
+</div>
+<main id="main">
+{% if msg %}<div class="notice notice-good" role="status"><i aria-hidden="true">✓</i><div>{{ msg }}</div></div>{% endif %}
+{% if err %}<div class="notice notice-critical" role="alert"><i aria-hidden="true">✕</i><div>{{ err }}</div></div>{% endif %}
 {% block content %}{% endblock %}
 </main>
+<footer class="foot small muted">빅터홍컴퍼니 AI 투자회사 · {{ mode_label }} · 화면 기준 {{ now|kst }} · 표시 시각은 한국시간(KST)</footer>
 </body>
 </html>

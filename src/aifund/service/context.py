@@ -21,6 +21,7 @@ from typing import Any
 from aifund import __version__
 from aifund.ai.budget import AIBudget
 from aifund.ai.demo_responder import demo_responder
+from aifund.ai.gemini import GeminiProvider, thinking_level_for
 from aifund.ai.provider import AnthropicProvider, DemoProvider, LLMProvider, OllamaProvider
 from aifund.ai.service import AIService
 from aifund.brokers.base import BrokerAdapter, MarketData
@@ -135,6 +136,9 @@ class AppContext:
             self._provider = AnthropicProvider(api_key=self.secrets.anthropic_api_key, model=s.model, effort=s.effort,
                                                use_fallbacks=s.use_server_fallbacks, timeout=s.timeout_sec,
                                                max_retries=s.max_retries)
+        elif s.provider == "gemini" and self.secrets.gemini_api_key:
+            self._provider = GeminiProvider(api_key=self.secrets.gemini_api_key, model=s.model, timeout=s.timeout_sec,
+                                            thinking_level=thinking_level_for(s.model, s.effort))
         elif s.provider == "ollama":
             self._provider = OllamaProvider(model=s.model, host=os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434"))
         return self._provider
@@ -235,6 +239,8 @@ def build_context(paths: ModePaths, *, clock: Clock | None = None, config_path: 
                      replay=replay)
     holder["ctx"] = ctx
     _setup_books(ctx)
+    if mode in ("internal_paper", "offline_demo"):
+        _resize_paper_books(ctx)
     _setup_markets(ctx, live_broker_factory)
     return ctx
 
@@ -255,6 +261,36 @@ def _setup_books(ctx: AppContext) -> None:
                            account_id=_paper_account("baseline_bh"), description="허용 종목 동일비중 매수·보유 기준")
     ctx.ledger.create_book("baseline_cash", kind="baseline", setting="CASH", principal_krw=principal, virtual=True,
                            account_id=_paper_account("baseline_cash"), description="현금 유지 기준")
+
+
+def _resize_paper_books(ctx: AppContext) -> None:
+    """모의 원금 변경을 기록한다. 잔고/주문 예약은 보존하며 실제 계좌에는 적용하지 않는다."""
+    from aifund.core.money import dstr
+    from aifund.core.timeutil import to_iso
+    from aifund.ledger.ledger import BOOK_STRATEGY
+
+    with ctx.db.tx() as c:
+        for book in ctx.ledger.books():
+            bid = book["book_id"]
+            delta = ctx.settings.risk.principal_cap_krw - ctx.ledger.principal(bid)
+            if not delta:
+                continue
+            reserved = sum((D(r[0]) for r in c.execute(
+                "SELECT amount_remaining FROM reservations WHERE book_id=? AND asset='KRW' AND kind='cash' AND status='active'",
+                (bid,)).fetchall()), ZERO)
+            balance = c.execute("SELECT free FROM paper_balances WHERE account_id=? AND asset='KRW'", (_paper_account(bid),)).fetchone()
+            if ctx.ledger.cash(bid, "KRW", c) - reserved + delta < 0 or (balance and D(balance[0]) + delta < 0):
+                raise ValueError("모의 원금 축소에 필요한 원화 현금 부족: 보유분·예약금을 먼저 정리하세요")
+            ctx.ledger._entry(c, bid, to_iso(ctx.clock.now()), "principal", BOOK_STRATEGY, "KRW", delta, None,
+                              "paper_capital", str(ctx.settings_version), "설정 변경에 따른 가상 원금 조정")
+            c.execute("UPDATE books SET principal_krw=? WHERE book_id=?", (dstr(ctx.settings.risk.principal_cap_krw), bid))
+            risk = c.execute("SELECT day_start_equity, peak_equity FROM risk_state WHERE book_id=?", (bid,)).fetchone()
+            if risk:
+                c.execute("UPDATE risk_state SET day_start_equity=?, peak_equity=? WHERE book_id=?",
+                          (dstr(D(risk[0]) + delta), dstr(D(risk[1]) + delta), bid))
+            if balance:
+                c.execute("UPDATE paper_balances SET free=? WHERE account_id=? AND asset='KRW'",
+                          (dstr(D(balance[0]) + delta), _paper_account(bid)))
 
 
 def _paper(ctx: AppContext, book_id: str) -> PaperBroker:
@@ -278,6 +314,7 @@ def _setup_markets(ctx: AppContext, live_broker_factory: Any) -> None:
         ctx.shadow_executors[book] = _executor(ctx, _paper(ctx, book))
     op_paper = _executor(ctx, _paper(ctx, OPERATING)) if ctx.mode in ("offline_demo", "internal_paper") else None
     kis_data_client = None
+    kiwoom_data_client = None
     for market, ms in s.markets.items():
         if not ms.enabled:
             continue
@@ -289,6 +326,18 @@ def _setup_markets(ctx: AppContext, live_broker_factory: Any) -> None:
             data, reason = DemoMarketData(ctx.clock), "데모(가짜 데이터)"
         elif market == "crypto":
             data, reason = UpbitMarketData(clock=ctx.clock), "업비트 공개 시세"
+        elif market in ("kr_stock", "us_stock") and ms.data_provider == "kiwoom":
+            from aifund.brokers.kiwoom import KiwoomReadClient, KiwoomMarketData, KiwoomUSMarketData
+            if ctx.mode == "live" and ctx.secrets.kiwoom_data and ctx.secrets.kiwoom_data.env == "mock":
+                reason = "미연결: 실거래에서 키움 모의 시세 사용 차단"
+            elif ctx.secrets.kiwoom_data is not None:
+                if kiwoom_data_client is None:
+                    kiwoom_data_client = KiwoomReadClient(ctx.secrets.kiwoom_data, clock=ctx.clock)
+                data_class = KiwoomUSMarketData if market == "us_stock" else KiwoomMarketData
+                data = data_class(kiwoom_data_client)
+                reason = "키움 REST 조회 전용 (" + ctx.secrets.kiwoom_data.env + ")"
+            else:
+                reason = "미연결: KIWOOM_DATA_APP_KEY/SECRET 미설정"
         elif ctx.secrets.kis_data is not None:
             if kis_data_client is None:
                 kis_data_client = KisClient(ctx.secrets.kis_data, token_cache_dir=ctx.paths.secrets_dir, clock=ctx.clock)
@@ -307,6 +356,8 @@ def _setup_markets(ctx: AppContext, live_broker_factory: Any) -> None:
         elif ctx.mode == "broker_sandbox":
             if market == "crypto":
                 breason = "미지원: 업비트 공식 모의투자 환경 미확인"
+            elif ms.broker != "kis":
+                breason = "미지원: 증권사 공식 모의주문은 KIS만 구현됨; 키움 시세는 internal_paper 사용"
             elif ctx.secrets.kis_trade is None or ctx.secrets.kis_trade.env != "demo":
                 breason = "미연결: KIS_SANDBOX_* 키 미설정"
             else:

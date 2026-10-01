@@ -33,7 +33,11 @@ def _mode(args: argparse.Namespace) -> str:
     return m
 
 
-def _config_path() -> Path | None:
+def _config_path(mode: str = "internal_paper") -> Path | None:
+    if mode in ("internal_paper", "offline_demo"):
+        paper = project_root() / "config" / "paper.toml"
+        if paper.exists():
+            return paper
     p = project_root() / "config" / "config.toml"
     return p if p.exists() else None
 
@@ -48,7 +52,7 @@ def _ctx(mode: str, **kw: Any):  # type: ignore[no-untyped-def]
 
     paths = mode_paths(mode).ensure()
     setup_logging(paths.log_dir, os.environ.get("AIFUND_LOG_LEVEL", "INFO"), console=kw.pop("console", True))
-    return build_context(paths, config_path=_config_path(), **kw)
+    return build_context(paths, config_path=_config_path(mode), **kw)
 
 
 def _service_running(mode: str) -> bool:
@@ -392,7 +396,7 @@ def cmd_demo(args: argparse.Namespace) -> int:
             from aifund.core.timeutil import parse_iso
 
             start = max(start, parse_iso(last) + timedelta(minutes=1))  # type: ignore[operator]
-        ctx = build_context(paths, clock=ManualClock(start), config_path=None)
+        ctx = build_context(paths, clock=ManualClock(start), config_path=_config_path("offline_demo"))
         summary = asyncio.run(simulate(ctx, args.hours))
     print(f"[데모·가짜 데이터] {args.hours}시간 시뮬레이션: 사이클 {summary['cycles']}, 주문 {summary['orders']}, AI 연구 {summary['research']}")
     if summary["notes"]:
@@ -568,7 +572,7 @@ def cmd_report(args: argparse.Namespace) -> int:
 
 def cmd_backtest(args: argparse.Namespace) -> int:
     from aifund.core.timeutil import UTC
-    from aifund.evaluation.backtest import run_backtest
+    from aifund.evaluation.backtest import run_backtest, side_fee_rate
     from aifund.strategies.base import build_strategies
 
     mode = _mode(args)
@@ -590,12 +594,31 @@ def cmd_backtest(args: argparse.Namespace) -> int:
     if not candles:
         print("저장된 캔들이 없습니다. --fetch 를 붙이세요.")
         return 1
+    # 미국주식 캔들은 달러이므로 자본도 달러로 환산한다(원화 금액을 달러로 착각하면 1주 단위 반올림이 달라짐).
+    ccy = next(iter(insts.values())).quote_ccy
+    usdkrw = None
+    if ccy != "KRW":
+        fx = ctx.fx.status(ctx.settings.risk.max_fx_age_hours)
+        if not fx.fresh:
+            asyncio.run(ctx.fx.refresh())
+            fx = ctx.fx.status(ctx.settings.risk.max_fx_age_hours)
+        if not fx.fresh or fx.rate is None:
+            print(f"환율이 없어 {ccy} 자본을 계산할 수 없습니다: {fx.reason}")
+            return 1
+        usdkrw = fx.rate.rate
+    fee_rate = side_fee_rate(ctx.settings.execution.paper, market)
+
+    def fee_text(v: Any) -> str:
+        return f"{v:,.0f}원" if ccy == "KRW" else f"{v:,.2f} {ccy}"
+
     split = datetime.fromisoformat(args.split).replace(tzinfo=UTC) if args.split else None
     for st in build_strategies(ctx.settings.strategies.model_dump(include={"trend_sma", "mean_reversion"})):
-        cap = ms.allocation_krw * ctx.settings.strategies.sleeves.get(st.strategy_id, 0)
-        res = run_backtest(st, candles, insts, capital=cap, fee_rate=ctx.settings.execution.paper.fee_rate,
+        cap_krw = ms.allocation_krw * ctx.settings.strategies.sleeves.get(st.strategy_id, 0)
+        cap = cap_krw / usdkrw if usdkrw else cap_krw
+        res = run_backtest(st, candles, insts, capital=cap, fee_rate=fee_rate,
                            slippage_bps=ctx.settings.execution.paper.slippage_bps, split_at=split)
-        print(f"\n[{st.title}] 자본 {cap:,.0f}원")
+        fx_note = f" (≈ {cap:,.2f} {ccy}, 환율 {usdkrw})" if usdkrw else ""
+        print(f"\n[{st.title}] 자본 {cap_krw:,.0f}원{fx_note}, 편도 비용률 {fee_rate * 100:.3f}%")
         for seg in ("dev", "eval", "total"):
             r = res.get(seg)
             if r:
@@ -603,7 +626,7 @@ def cmd_backtest(args: argparse.Namespace) -> int:
                 bh = f"{r['buy_hold_return_pct']:.2f}%" if r["buy_hold_return_pct"] is not None else "-"
                 mdd = f"{r['max_drawdown_pct']:.2f}%" if r["max_drawdown_pct"] is not None else "-"
                 print(f"  {({'dev': '개발 구간', 'eval': '평가 구간', 'total': '전체'})[seg]}: 수익률 {rp}, 최대낙폭 {mdd}, "
-                      f"거래 {r['trades']}회, 수수료 {r['fees']:,.0f}원, 매수보유 {bh}, 봉 {r['bars']}")
+                      f"거래 {r['trades']}회, 수수료 {fee_text(r['fees'])}, 매수보유 {bh}, 봉 {r['bars']}")
         print("  " + res["note"])
     return 0
 
@@ -652,6 +675,44 @@ def cmd_orders(args: argparse.Namespace) -> int:
     return 0
 
 
+# ---------------------------------------------------------------------- 연결 점검
+def cmd_kiwoom_check(args: argparse.Namespace) -> int:
+    """키움 조회 전용 연결 점검(현재가·일봉, 선택 시 국내 계좌). 주문 API는 허용 목록에 없다."""
+    from aifund.brokers.base import BrokerError
+    from aifund.brokers.kiwoom import KiwoomMarketData, KiwoomReadClient, KiwoomUSMarketData
+    from aifund.core.secrets import load_mode_secrets
+
+    creds = load_mode_secrets(_mode(args)).kiwoom_data
+    if creds is None:
+        print("키움 조회 키 미설정 또는 offline_demo 모드")
+        return 1
+    us = ":" in args.symbol
+    if us and args.account:
+        print("미국주식 계좌 조회는 아직 미지원입니다. --account 없이 시세를 점검하세요.")
+        return 1
+
+    async def check():
+        client = KiwoomReadClient(creds)
+        try:
+            data = KiwoomUSMarketData(client) if us else KiwoomMarketData(client)
+            instruments = await data.instruments("us_stock" if us else "kr_stock", [args.symbol])
+            quotes = await data.quotes(instruments)
+            candles = await data.candles(instruments[0], "1d", 5)
+            result = {"environment": creds.env, "read_only": True, "symbol": args.symbol,
+                      "last": quotes[0].last, "daily_candles": len(candles)}
+            if args.account:
+                result["account"] = await client.account_summary()
+            _print(result)
+        finally:
+            await client.close()
+    try:
+        asyncio.run(check())
+    except BrokerError as exc:
+        print(str(exc))
+        return 1
+    return 0
+
+
 # ---------------------------------------------------------------------- 파서
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="aifund", description="빅터홍컴퍼니 AI 투자회사")
@@ -666,6 +727,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     add("setup", cmd_setup, "초기 설정(.env·관리자 토큰·DB·자체검증)")
     add("doctor", cmd_doctor, "환경 점검")
+    sp = add("kiwoom-check", cmd_kiwoom_check, "키움 현재가·일봉 조회 점검(주문 없음)")
+    sp.add_argument("--symbol", default="005930")
+    sp.add_argument("--account", action="store_true", help="예수금·보유종목도 조회")
     sp = add("run", cmd_run, "서비스 실행(대시보드 포함)")
     sp.add_argument("--no-web", action="store_true")
     sp.add_argument("--replay", help="명시적 재생 데이터 JSON")

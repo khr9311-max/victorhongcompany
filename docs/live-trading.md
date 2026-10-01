@@ -13,7 +13,8 @@ LIVE는 **사용자의 의도적인 활성화로만** 켜집니다. API 키를 �
 
 1. KIS Developers에서 앱키 발급, 가능하면 봇 전용 계좌 사용. 모의투자 키로 `broker_sandbox` 모드에서 먼저 확인 권장.
 2. `.env`의 `KIS_LIVE_APP_KEY/APP_SECRET/ACCOUNT_NO/ACCOUNT_PRODUCT`(모의는 `KIS_SANDBOX_*`).
-3. 설정에서 `markets.kr_stock`(또는 `us_stock`) `enabled=true`, `allocation_krw`(합계 ≤ 원금 한도) 지정. 미국 주식은 계좌에 USD가 있어야 하며 자동 환전은 하지 않습니다.
+3. 설정(**`config/config.toml`** 또는 live 모드 대시보드 — 내부 모의용 `config/paper.toml`은 live에 적용되지 않음)에서 `markets.kr_stock`(또는 `us_stock`) `enabled=true`, `allocation_krw`(합계 ≤ 원금 한도) 지정. 미국 주식은 계좌에 USD가 있어야 하며 자동 환전은 하지 않습니다(내부 모의의 모의 환전은 실계좌에 적용되지 않음).
+4. 시세를 키움으로 받으려면(`data_provider = "kiwoom"`) `KIWOOM_DATA_ENV=real`과 실전 키가 필요합니다. live 모드는 키움 mock 시세를 쓰지 않고 그 시장을 '미연결'로 둡니다. 주문은 여전히 KIS입니다.
 
 ## 1. 활성화 절차
 
@@ -31,7 +32,7 @@ bash scripts/macos/aifund.sh --mode live live enable crypto --ack-no-withdraw --
 
 ## 2. 운영 중 자동 차단(신규 위험 증가 중지, 매도는 가능한 범위에서 유지)
 
-- 설정(한도·종목·계좌·운용 설정) 변경 → LIVE '재확인 필요'(모든 실주문 중지) → 1번 절차 다시.
+- 설정(한도·종목·계좌·브로커·시세 공급자·운용 설정) 변경 → LIVE '재확인 필요'(모든 실주문 중지) → 1번 절차 다시. `config/config.toml`을 고쳐 재시작해도 같습니다(파일에서 바뀐 항목만 반영, 대시보드 변경은 유지).
 - 일손실 30,000원 도달 → 그날(KST) 신규 매수 중지 / 최대 낙폭 30% → 수동 해제 전까지 중지(`제어` 화면의 '낙폭 정지 해제', 확인 문구 필요).
 - 시세·캔들 지연, 환율 지연(외화), 시계 오차, 스프레드 과대, 휴장, 인증 오류, 상태불명 주문, 대사 불일치, AI 정책(`hold_new_risk` 선택 시).
 
